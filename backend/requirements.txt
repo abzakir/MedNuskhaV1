@@ -1,0 +1,39 @@
+# MedNuskha backend — stack locked in AGENTS.md §6.
+# Floors, not pins: this repo runs on Python 3.14 (see PROJECT_LOG.md decisions
+# log, Session 1) and several of these only publish 3.14 wheels on newer
+# releases. Do not add anything here that is not in AGENTS.md §6.
+
+# --- web ---
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
+
+# --- data ---
+sqlmodel>=0.0.22
+psycopg[binary]>=3.2.0
+pydantic-settings>=2.6.0
+python-dotenv>=1.0.1
+
+# --- http (only whatsapp/client.py may use this to reach graph.facebook.com) ---
+httpx>=0.27.0
+
+# --- scheduling ---
+apscheduler>=3.10.4
+
+# --- alibaba cloud model studio (Qwen + Qwen-VL) ---
+dashscope>=1.20.0
+
+# --- voice ---
+faster-whisper>=1.0.3
+google-cloud-texttospeech>=2.21.0
+
+# --- storage ---
+supabase>=2.9.0
+
+# --- reports ---
+weasyprint>=62.3
+jinja2>=3.1.4
+
+# --- tests ---
+pytest>=8.3.0
+pytest-asyncio>=0.24.0

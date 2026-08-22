@@ -1,0 +1,33 @@
+# secrets
+.env
+.env.local
+*.pem
+*service-account*.json
+gcp-credentials.json
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# node / next
+node_modules/
+.next/
+out/
+.vercel/
+frontend/.env*.local
+
+# models / generated media
+.whisper-cache/
+*.ogg
+*.pdf
+!MedNuskha_PRD_v1.0.pdf
+
+# os / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
