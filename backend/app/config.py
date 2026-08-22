@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     whatsapp_waba_id: str = ""
     whatsapp_verify_token: str = ""
     whatsapp_api_version: str = "v23.0"
+    #: The language code the four templates were SUBMITTED under in
+    #: WhatsApp Manager. Must match exactly or the send fails silently.
+    #: Not in AGENTS.md section 13 - added in Phase 2, see PROJECT_LOG.
+    whatsapp_template_lang: str = "en"
 
     # --- Alibaba Cloud Model Studio (DashScope) ---
     dashscope_api_key: str = ""

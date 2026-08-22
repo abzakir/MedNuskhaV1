@@ -12,6 +12,7 @@ slow, so duplicates are normal traffic, not an error (section 17).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request, Response
@@ -90,7 +91,7 @@ async def receive_webhook(request: Request, background: BackgroundTasks) -> Resp
 # --------------------------------------------------------------------------
 
 
-def process_webhook(body: dict) -> None:
+async def process_webhook(body: dict) -> None:
     """Parse and persist one webhook body. Runs after the 200 has been sent."""
     try:
         messages = parse_webhook(body)
@@ -101,19 +102,25 @@ def process_webhook(body: dict) -> None:
 
     for status in statuses:
         try:
-            _apply_status(status)
+            await asyncio.to_thread(_apply_status, status)
         except Exception as exc:  # noqa: BLE001
             log.warning("status update failed for %s: %s", status.wa_message_id, exc)
 
     for msg in messages:
         try:
-            _process_message(msg, body)
+            routed = await asyncio.to_thread(_process_message, msg, body)
+            if routed:
+                await _route(msg, routed)
         except Exception as exc:  # noqa: BLE001 - one bad message must not
             log.exception("inbound %s failed: %s", msg.wa_message_id, exc)
 
 
-def _process_message(msg: InboundMessage, raw_body: dict) -> None:
-    """Persist one inbound message, deduplicating on wa_message_id."""
+def _process_message(msg: InboundMessage, raw_body: dict) -> dict | None:
+    """Persist one inbound message, deduplicating on wa_message_id.
+
+    Returns the routing context when the message is new and comes from a
+    number we know, or None when there is nothing further to do.
+    """
     number = normalise_number(msg.from_number)
 
     with session_scope() as session:
@@ -154,7 +161,14 @@ def _process_message(msg: InboundMessage, raw_body: dict) -> None:
                 log.info("duplicate inbound %s ignored", msg.wa_message_id)
                 return
             log.error("could not persist inbound %s: %s", msg.wa_message_id, exc)
-            return
+            return None
+
+        context = {
+            "patient_id": patient.id if patient else None,
+            "patient_name": patient.name if patient else None,
+            "caretaker_id": caretaker.id if caretaker else None,
+            "number": number,
+        }
 
     who = patient.name if patient else (caretaker.name if caretaker else "unknown")
     log.info("inbound %s from %s (%s): kind=%s payload=%s text=%r",
@@ -162,9 +176,9 @@ def _process_message(msg: InboundMessage, raw_body: dict) -> None:
 
     if patient is None and caretaker is None:
         log.warning("inbound from an unregistered number %s - ignoring", number)
-        return
+        return None
 
-    _route(msg, patient, caretaker)
+    return context
 
 
 def _dose_id_from(msg: InboundMessage, session) -> str | None:
@@ -214,13 +228,66 @@ def _apply_status(status: StatusUpdate) -> None:
         log.error("delivery FAILED for %s: %s", status.wa_message_id, status.error)
 
 
-def _route(msg: InboundMessage, patient: Patient | None,
-           caretaker: Caretaker | None) -> None:
+async def _route(msg: InboundMessage, context: dict) -> None:
     """Hand a persisted message on to whoever owns it.
 
-    Phase 1 is transport only: the message is stored and logged. Phase 2
-    attaches the dose state machine to button payloads, and Phase 3 attaches
-    the agent to free text and voice notes.
+    A button payload goes straight to the dose state machine - no
+    interpretation is needed, because the dose id is right there in the
+    payload (invariant 2). Free text and voice notes are the agent's job and
+    are attached in Phase 3.
     """
-    log.debug("routing %s (kind=%s) - no handler attached yet",
-              msg.wa_message_id, msg.kind)
+    if msg.kind == "button" and msg.payload:
+        await handle_button(msg, context)
+        return
+
+    log.debug("no handler yet for kind=%s from %s (Phase 3 attaches the agent)",
+              msg.kind, context["number"])
+
+
+async def handle_button(msg: InboundMessage, context: dict) -> None:
+    """Apply a quick-reply tap to the dose it names."""
+    from app.scheduler import state_machine as sm
+    from app.scheduler.ticker import notify_late_resolution
+    from app.whatsapp.client import DOSE_PAYLOAD_RE
+
+    match = DOSE_PAYLOAD_RE.match(msg.payload or "")
+    if not match:
+        log.info("button payload %r carries no dose id - ignoring", msg.payload)
+        return
+
+    action, dose_id = match.group(1), match.group("dose_id")
+
+    if action == "TAKEN":
+        landed = await asyncio.to_thread(
+            sm.confirm_taken, dose_id, "button", msg.text)
+        if landed == "TAKEN_LATE":
+            # Section 4.8: a late confirmation must reach the caretaker who
+            # was already told the dose was missed.
+            await notify_late_resolution(dose_id)
+
+    elif action == "SKIP":
+        await asyncio.to_thread(sm.mark_skipped, dose_id, msg.text, "button")
+
+    elif action == "LATER":
+        # "Abhi nahi" acknowledges the reminder but is NOT a snooze - snoozing
+        # beyond it is explicitly out of scope (section 4). The dose stays
+        # open so the follow-up and the caretaker escalation still run.
+        await asyncio.to_thread(_record_later, dose_id, msg.text)
+        log.info("dose %s: patient replied 'abhi nahi' - chain continues",
+                 dose_id)
+
+
+def _record_later(dose_id: str, text: str | None) -> None:
+    """Store an "abhi nahi" reply without changing state.
+
+    Deliberately not in state_machine.py: nothing here touches `state`, and
+    section 8 reserves that module for transitions only.
+    """
+    with session_scope() as session:
+        dose = session.get(DoseEvent, dose_id)
+        if dose is None:
+            return
+        dose.response_text = text
+        dose.reason = text or "abhi nahi"
+        session.add(dose)
+        session.commit()

@@ -15,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router as api_router
 from app.config import settings
 from app.db import check_connection, init_db
+from app.scheduler.ticker import is_running, start_scheduler, stop_scheduler
+from app.whatsapp.client import close_client
 from app.whatsapp.webhook import router as webhook_router
 
 logging.basicConfig(
@@ -45,11 +47,15 @@ async def lifespan(app: FastAPI):
     else:
         log.warning("DATABASE_URL not set - running without a database")
 
-    # The APScheduler ticker is started in Phase 2, guarded against uvicorn
-    # --reload spawning it twice (AGENTS.md section 17).
+    # Guarded twice: a module flag for this process, and a Postgres advisory
+    # lock so a second worker - or a teammate's dev server pointed at the same
+    # Supabase project - cannot fire every reminder again (section 17).
+    start_scheduler()
 
     yield
 
+    stop_scheduler()
+    await close_client()
     log.info("shutting down")
 
 
@@ -85,5 +91,6 @@ def health() -> dict:
         "timezone": settings.timezone,
         "database": "connected" if check_connection() else "not connected",
         "whatsapp": "configured" if settings.whatsapp_configured else "not configured",
+        "scheduler": "running" if is_running() else "stopped",
         "missing_env": settings.missing_required(),
     }

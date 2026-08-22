@@ -40,33 +40,34 @@ adversarial case lists are already written out in them as data.
 
 ## Current phase
 
-**Phase 1 (WhatsApp transport): code complete and verified except the one step
-that needs Meta.** The team asked Claude to keep building while they sort out
-the Meta account, so Phase 2 follows immediately.
+**Phases 1 and 2 are code-complete and verified. Only the real-phone step is
+outstanding, and it is blocked on Meta, not on us.**
 
-Verified against the live database (26/26 checks): number normalisation, all
-five inbound payload shapes, the GET verify handshake returning plain text,
-POST returning 200 in under 2s, message_log persistence, dose id extraction
-from the button payload, deduplication on a redelivered message, and delivery
-receipts updating the outbound row.
+Phase 2 (the dose loop) passes 42/42 checks against the live database with the
+sender stubbed: materialisation idempotency, the taken path, the missed path
+(follow-up then caretaker alert), the late-reply reclassification, refusal of
+illegal transitions, no re-send across restarts, stale-dose suppression, a
+button tap driven through the real webhook, and "abhi nahi" correctly *not*
+acting as a snooze.
 
-**Not verified, and cannot be until Meta works:** an actual send to an actual
-phone, and a real button tap. That is the remaining half of the §14 Phase 1
-gate.
+**What is genuinely unverified:** that a message leaves Meta and lands on a
+phone. Everything up to the moment of transmission is proven.
 
 ## Next steps
 
 1. **Meta account** (blocked, team is on it). Capture the literal error text.
-   Do NOT register your own number as the sender — Meta issues a free test
+   Do NOT register your own number as the sender - Meta issues a free test
    number, and a number that already has WhatsApp can never be a sender.
-2. When the token lands: fill `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`,
-   `WHATSAPP_WABA_ID`, `WHATSAPP_VERIFY_TOKEN` in `.env`, then run
+2. When the token lands, fill the four WHATSAPP_* values in `.env`, then:
    `python scripts/send_test.py <number>` and tap a button. That closes the
-   Phase 1 gate with no code changes expected.
-3. Templates from §10 still need submitting. Note the language code chosen and
-   pass it to `send_template` — a mismatch fails silently.
-4. `DASHSCOPE_API_KEY` is still empty; Phase 3's `interpret` and `knowledge`
-   cannot run without it (guardrails and i18n can, and are pure logic).
+   Phase 1 gate. Then set a dose two minutes out and walk away to close
+   Phase 2's.
+3. Submit the four templates from §10 and **tell Claude which language code you
+   submitted under** - it goes in `WHATSAPP_TEMPLATE_LANG`, and a mismatch
+   fails silently.
+4. `DASHSCOPE_API_KEY` is still empty. Phase 3's `interpret` and `knowledge`
+   need it to run; `guardrails` and `i18n` do not and can be finished and
+   tested without it.
 
 ## Environment / setup
 
@@ -165,7 +166,69 @@ Phase 8, where a CRLF Makefile breaks.
   *recipients* on the 5-number whitelist. Trying to register a number that
   already has WhatsApp on it as the sender always fails.
 
+- **`rowcount` is -1 for a multi-row `ON CONFLICT` insert** under psycopg.
+  `materialise_doses` uses `RETURNING id` and counts the rows instead. The
+  idempotency was always correct; only the logged count was wrong, which is
+  exactly the kind of thing that sends someone debugging the wrong problem.
+- **Meta rejects an empty template parameter**, and also newlines, tabs and
+  runs of four or more spaces. `ticker._clean_var` sanitises every variable and
+  substitutes a non-empty fallback - otherwise a medicine with no confirmed
+  food rule would fail the send at the moment a real dose was due.
+- **Git Bash heredocs are unreliable on this machine for anything long** -
+  they silently truncate or mangle backslashes. Write Python patch scripts to
+  a file and run them, or use the editor tools directly.
+- **A button payload naming a non-existent dose used to lose the whole
+  message.** `message_log.dose_event_id` is a foreign key, so the insert failed
+  and the handler misread that as a duplicate. Duplicates and real integrity
+  failures are now told apart, and an unknown dose id stores the payload with a
+  null link rather than dropping the row.
+
 ## Decisions log
+
+### 2026-08-22 — Session 3 (Phases 1 and 2)
+
+**Done:** Phase 1 (whatsapp client, parser, webhook, send_test) and Phase 2
+(state machine, ticker) written and verified — 26/26 and 42/42 against the live
+database, with outbound sends captured rather than transmitted.
+
+**Key decisions:**
+
+- **Claim-before-send.** `mark_sent` moves SCHEDULED -> SENT *before* the
+  reminder is transmitted. A crash mid-send therefore leaves the dose SENT and
+  the restart never re-sends it (invariant 5). The trade is that a failed send
+  leaves a dose marked SENT with nothing delivered; the follow-up covers that,
+  and the failure is in `message_log`. A duplicate reminder to a 68-year-old is
+  worse than a late one.
+- **A Postgres advisory lock guards the scheduler**, not just a module flag.
+  A flag only protects one process; the lock stops a second uvicorn worker, or
+  a teammate running `dev.ps1` against the same Supabase project, from firing
+  every reminder twice. It is released automatically if the process dies.
+- **Stale doses are marked MISSED, never reminded.** If the server was down
+  past the escalation window, waking up and blasting a burst of old reminders
+  at an elderly patient would be worse than useless.
+- **"Abhi nahi" is not a snooze.** It records the reply and leaves the dose
+  open, so the follow-up and the caretaker escalation still run. Snoozing
+  beyond it is explicitly out of scope (§4), and the caretaker should still
+  learn the dose was not taken.
+- **Illegal transitions are refused and logged**, not silently applied. This is
+  what stops a late webhook retry from dragging a TAKEN dose back into
+  REMINDED_AGAIN.
+- **New env var: `WHATSAPP_TEMPLATE_LANG`** (default `en`), added to
+  `.env.example`. §13 has no such name, but the language code a template was
+  submitted under must match at send time or the send fails silently, and
+  hardcoding it would be worse. **The team must set this to whatever they
+  actually submitted.**
+- **`_record_later` deliberately lives in webhook.py, not state_machine.py.**
+  It touches `response_text` and `reason` but never `state`, and §8 reserves
+  the state machine for transitions only.
+
+**Not done / not verified:** any real transmission. Also `reports/` and the
+daily report job were left alone — Phase 6 owns them, and referencing a module
+that does not exist yet would have broken the scheduler at import time.
+
+**Before touching this area next:** `state_machine.ALLOWED` is the single
+source of truth for what transitions are legal. Add a state there before using
+it anywhere else, or the transition will be silently refused.
 
 ### 2026-08-22 — Session 2 (Phase 1, paused)
 
