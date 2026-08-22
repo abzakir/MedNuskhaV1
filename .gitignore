@@ -1,6 +1,10 @@
 # secrets
+# Ignore EVERY .env variant, then re-allow only the example. A .env.backup
+# holding real credentials sitting untracked is exactly how secrets get
+# committed by an absent-minded `git add -A`.
 .env
-.env.local
+.env.*
+!.env.example
 *.pem
 *service-account*.json
 gcp-credentials.json

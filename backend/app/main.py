@@ -81,6 +81,22 @@ app.include_router(api_router)
 app.include_router(webhook_router)
 
 
+def _llm_health() -> dict:
+    """Key-pool health. Never contains key material - see llm.KeyRing.status."""
+    if not settings.llm_configured:
+        return {"status": "no keys", "keys": []}
+    from app.agent.llm import ring
+
+    keys = ring().status()
+    ready = sum(1 for k in keys if k["state"] == "ready")
+    return {
+        "status": "ok" if ready else "all keys cooling or dead",
+        "ready": ready,
+        "total": len(keys),
+        "keys": keys,
+    }
+
+
 @app.get("/api/health", tags=["meta"])
 def health() -> dict:
     """Liveness and configuration check. Always 200 while the process is up."""
@@ -92,5 +108,6 @@ def health() -> dict:
         "database": "connected" if check_connection() else "not connected",
         "whatsapp": "configured" if settings.whatsapp_configured else "not configured",
         "scheduler": "running" if is_running() else "stopped",
+        "llm": _llm_health(),
         "missing_env": settings.missing_required(),
     }

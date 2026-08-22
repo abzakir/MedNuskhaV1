@@ -27,19 +27,37 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # --- WhatsApp (Meta Cloud API) ---
-    whatsapp_token: str = ""
-    whatsapp_phone_number_id: str = ""
-    whatsapp_waba_id: str = ""
-    whatsapp_verify_token: str = ""
-    whatsapp_api_version: str = "v23.0"
-    #: The language code the four templates were SUBMITTED under in
-    #: WhatsApp Manager. Must match exactly or the send fails silently.
-    #: Not in AGENTS.md section 13 - added in Phase 2, see PROJECT_LOG.
-    whatsapp_template_lang: str = "en"
+    # --- WhatsApp delivery (GREEN-API) ---
+    #: Green API replaced the Meta Cloud API on 2026-08-22 after the team could
+    #: not get a Meta Business account. The Meta client is preserved in git
+    #: history (commit 70263f4) if we ever go back. See PROJECT_LOG.md.
+    green_api_id_instance: str = ""
+    green_api_token_instance: str = ""
+    green_api_url: str = "https://api.green-api.com"
+    #: Green API recommends a separate host for file uploads.
+    green_api_media_url: str = "https://media.green-api.com"
+    #: Shared secret we append to the webhook path, since Green API has no
+    #: equivalent of Meta's hub.verify_token handshake.
+    webhook_secret: str = ""
 
-    # --- Alibaba Cloud Model Studio (DashScope) ---
+    # --- LLM (Groq now, Alibaba Model Studio when the credits land) ---
+    #: Comma-separated POOLS, not single keys. Every free tier has a daily
+    #: cap; several keys rotate so one hitting its limit mid-demo does not
+    #: stop the system. Singular *_API_KEY is still accepted and merged in.
+    groq_api_keys: str = ""
+    groq_api_key: str = ""
+    dashscope_api_keys: str = ""
     dashscope_api_key: str = ""
+
+    #: Groq hosts Qwen, so the Alibaba/Qwen story survives the swap.
+    groq_model: str = "qwen/qwen3.6-27b"
+    #: Cloud Whisper - far better on Urdu than the local model, free tier.
+    groq_whisper_model: str = "whisper-large-v3"
+    dashscope_model: str = "qwen-plus"
+
+    #: Seconds a key sits out after a rate-limit response, when the provider
+    #: does not send a Retry-After header.
+    llm_cooldown_seconds: int = 60
 
     # --- Voice ---
     #: edge-tts voice id. ur-PK-UzmaNeural (female) or ur-PK-AsadNeural (male).
@@ -86,7 +104,45 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def whatsapp_configured(self) -> bool:
-        return bool(self.whatsapp_token and self.whatsapp_phone_number_id)
+        return bool(self.green_api_id_instance and self.green_api_token_instance)
+
+    @staticmethod
+    def _split(*values: str) -> list[str]:
+        """Parse comma/whitespace-separated keys, de-duplicated, order kept."""
+        out: list[str] = []
+        for value in values:
+            for part in (value or "").replace("\n", ",").split(","):
+                part = part.strip()
+                if part and part not in out:
+                    out.append(part)
+        return out
+
+    @property
+    def groq_keys(self) -> list[str]:
+        return self._split(self.groq_api_keys, self.groq_api_key)
+
+    @property
+    def dashscope_keys(self) -> list[str]:
+        return self._split(self.dashscope_api_keys, self.dashscope_api_key)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def llm_configured(self) -> bool:
+        return bool(self.groq_keys or self.dashscope_keys)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def llm_key_count(self) -> int:
+        return len(self.groq_keys) + len(self.dashscope_keys)
+
+    @property
+    def green_base(self) -> str:
+        return f"{self.green_api_url.rstrip('/')}/waInstance{self.green_api_id_instance}"
+
+    @property
+    def green_media_base(self) -> str:
+        return (f"{self.green_api_media_url.rstrip('/')}"
+                f"/waInstance{self.green_api_id_instance}")
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -97,10 +153,9 @@ class Settings(BaseSettings):
         """Env vars that are empty and will block a real (non-health) request."""
         required = {
             "DATABASE_URL": self.database_url,
-            "WHATSAPP_TOKEN": self.whatsapp_token,
-            "WHATSAPP_PHONE_NUMBER_ID": self.whatsapp_phone_number_id,
-            "WHATSAPP_VERIFY_TOKEN": self.whatsapp_verify_token,
-            "DASHSCOPE_API_KEY": self.dashscope_api_key,
+            "GREEN_API_ID_INSTANCE": self.green_api_id_instance,
+            "GREEN_API_TOKEN_INSTANCE": self.green_api_token_instance,
+            "GROQ_API_KEYS": ",".join(self.groq_keys),
         }
         return [name for name, value in required.items() if not value]
 
