@@ -207,7 +207,7 @@ hackathon demo, or is covered by the Alibaba Cloud hackathon credits.
 | LLM reasoning | **Qwen** via Alibaba Model Studio (DashScope) | hackathon credits | Sponsor platform |
 | Vision (Phase 7) | **Qwen-VL** via DashScope | hackathon credits | Sponsor platform |
 | ASR | **`faster-whisper`** running locally | free forever | Best free Urdu accuracy, no API key, no quota |
-| TTS | **Google Cloud TTS** free tier, `ur-PK` voices | free (~1–4M chars/mo) | Best free Urdu voice available |
+| TTS | **`edge-tts`** (Microsoft neural voices), `ur-PK-UzmaNeural` | free forever | Best free Urdu voice, and needs no account, card or API key |
 | Object storage | **Supabase Storage** free tier | free (1 GB) | Same platform as the DB |
 | Backend host | **Alibaba Cloud ECS** small instance | hackathon credits | Sponsor platform, and it's the demo requirement |
 | Frontend host | **Vercel** free tier | free | One `git push` deploys the dashboard |
@@ -219,11 +219,18 @@ hackathon demo, or is covered by the Alibaba Cloud hackathon credits.
 - `faster-whisper` runs on CPU with the `base` or `small` model. Urdu accuracy is
   strong for short utterances like "le li hai", and it costs nothing per call —
   no quota to exhaust the night before the demo.
-- Google Cloud TTS `ur-PK` Neural2 / Chirp3-HD voices are the best free Urdu
-  synthetic speech we can reach. The free tier requires a card on file; nothing
-  is charged inside the quota.
-- **Fallback if the card is a problem:** Piper TTS locally (`ur_PK` ONNX voice).
-  Lower quality, but free forever and offline.
+- `edge-tts` reaches Microsoft's neural voices — the same ones Azure sells —
+  with **no account, no card and no API key**. Two Pakistani Urdu voices exist:
+  `ur-PK-UzmaNeural` (female, the one we use) and `ur-PK-AsadNeural` (male).
+  Output is MP3, converted to OGG/Opus mono with PyAV, which is already present
+  as a `faster-whisper` dependency — so no ffmpeg binary is needed on the ECS
+  box either.
+- *Replaced Google Cloud TTS on 2026-08-22 because it requires a card on file.
+  Quality is equivalent; the dependency tree is smaller. See PROJECT_LOG.md.*
+- **Fallback if edge-tts is blocked or the venue has no internet:** Piper TTS
+  locally (`ur_PK` ONNX voice). Lower quality, but offline and free forever.
+  The official-API path, if this ever leaves the hackathon, is Azure Speech's
+  F0 tier — identical voices, 500k characters a month free.
 - **Do not silently swap the voice stack.** If a service can't be configured,
   log it in `PROJECT_LOG.md` and ask before switching.
 
@@ -462,7 +469,7 @@ WHATSAPP_API_VERSION=v23.0
 DASHSCOPE_API_KEY=                  # Qwen + Qwen-VL
 
 # Voice
-GOOGLE_APPLICATION_CREDENTIALS=     # path to service account JSON
+TTS_VOICE=ur-PK-UzmaNeural          # edge-tts; ur-PK-AsadNeural is the male voice
 WHISPER_MODEL=base                  # or "small" for better Urdu
 
 # Data
@@ -709,9 +716,9 @@ reminder at its scheduled time.
 **Claude prompt:**
 > Add `voice/tts.py` and `voice/asr.py`.
 >
-> `tts.py` wraps Google Cloud TTS with a `ur-PK` voice — call `list_voices`
-> and pick the highest-quality `ur-PK` option available. Output must be
-> OGG/Opus. Run it in a background task when a schedule is confirmed: generate
+> `tts.py` wraps `edge-tts` with the `ur-PK` voice named in `TTS_VOICE`.
+> Output must be OGG/Opus mono — convert the MP3 edge-tts returns using PyAV.
+> No API key, account or card is involved. Run it in a background task when a schedule is confirmed: generate
 > one audio file per unique dose text, upload to Supabase Storage under
 > `voice-notes/`, and save the storage key on the dose event. Cache by
 > `(medicine, dose_time)` so we don't regenerate identical audio. When a
@@ -730,19 +737,16 @@ reminder at its scheduled time.
 - Replying with an Urdu voice note ("le li hai") transitions the dose to TAKEN.
 - Asking "yeh dawai kis liye hai?" by voice gets a spoken reply.
 
-**Kill switch:** if Google TTS Urdu is unusable by **18:00 on Day 3**, switch
+**Kill switch:** if edge-tts is unusable by **18:00 on Day 3**, switch
 `tts.py` to Piper (`ur_PK` ONNX voice) and log the swap. If Piper also blocks,
 ship text-only, hand-record one voice reply for the demo, and say in the pitch
 that voice is tuned during the pilot. Do not spend Day 4 on this.
 
 **Your turn:**
-1. Create a Google Cloud project. Enable the Text-to-Speech API. Create a
-   service account with the "Cloud Text-to-Speech User" role, download the JSON
-   key, point `GOOGLE_APPLICATION_CREDENTIALS` at it.
-2. A card on file is required to unlock the free tier — nothing is charged
-   inside the quota. Check the current free-tier character limits on Google's
-   pricing page before you rely on them.
-3. Run `faster-whisper` once locally on an Urdu sample to warm the model cache
+1. Nothing to set up — `edge-tts` needs no account, card or key. Just listen
+   to the generated voice notes and say whether the voice works for a
+   68-year-old listener.
+2. Run `faster-whisper` once locally on an Urdu sample to warm the model cache
    and confirm recognition works before Claude wires it in.
 
 ---

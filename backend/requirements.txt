@@ -25,7 +25,13 @@ dashscope>=1.20.0
 
 # --- voice ---
 faster-whisper>=1.0.3
-google-cloud-texttospeech>=2.21.0
+# Microsoft neural TTS with no account, card or key. Replaced
+# google-cloud-texttospeech on 2026-08-22 - see PROJECT_LOG.md.
+edge-tts>=6.1.9
+# PyAV converts the MP3 edge-tts returns into the OGG/Opus mono WhatsApp needs
+# (invariant 7). Already pulled in by faster-whisper; pinned here so the
+# dependency is explicit rather than accidental. No ffmpeg binary required.
+av>=12.0.0
 
 # --- storage ---
 supabase>=2.9.0

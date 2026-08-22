@@ -67,7 +67,9 @@ phone. Everything up to the moment of transmission is proven.
    fails silently.
 4. `DASHSCOPE_API_KEY` is still empty. Phase 3's `interpret` and `knowledge`
    need it to run; `guardrails` and `i18n` do not and can be finished and
-   tested without it.
+   tested without it. **This is now the only other external blocker** — and it
+   is independent of Meta, so it can be done in parallel.
+5. Voice needs nothing from anyone: no account, no card, no key.
 
 ## Environment / setup
 
@@ -91,8 +93,9 @@ Backend on :8000 (health at `/api/health`), frontend on :3000.
 `WHATSAPP_VERIFY_TOKEN`, `DASHSCOPE_API_KEY` are currently **unset**;
 `/api/health` lists exactly which are missing at any time.
 
-**Accounts still to create:** Meta Developer + WABA, Supabase, DashScope,
-Google Cloud (TTS — not needed until Phase 5).
+**Accounts still to create:** Meta Developer + WABA (blocked), DashScope.
+Supabase is done. **No voice account is needed any more** — see the TTS swap
+in the decisions log.
 
 **Git / GitHub:** remote is `https://github.com/abzakir/MedNuskha`, branch
 `main`. Phase 0 is pushed (`a163ac9`). **Standing instruction from the team:
@@ -183,7 +186,56 @@ Phase 8, where a CRLF Makefile breaks.
   failures are now told apart, and an unknown dose id stores the payload with a
   null link rather than dropping the row.
 
+- **edge-tts returns MP3, and WhatsApp needs OGG/Opus mono** (invariant 7).
+  PyAV does the conversion in about 0.2s and is already installed as a
+  faster-whisper dependency, so **no ffmpeg binary is needed** on the dev
+  machine or the ECS box. Verified end to end on real Urdu text.
+
 ## Decisions log
+
+### 2026-08-22 — Session 4 (TTS stack swap)
+
+**Reason:** the team reported Google Cloud TTS wanting a card on file (~$10),
+and asked for a free alternative. §6 forbids swapping the voice stack silently,
+so alternatives were tested and the choice was put to the team, who approved.
+
+**Swap: Google Cloud TTS -> `edge-tts`, voice `ur-PK-UzmaNeural`.**
+
+Not a downgrade. `edge-tts` reaches Microsoft's neural voices — the same ones
+Azure sells — with **no account, no card and no API key**. Two Pakistani Urdu
+voices exist: `ur-PK-UzmaNeural` (female, chosen — a warmer, more caregiver-like
+read, which fits §11's "never scolds" tone) and `ur-PK-AsadNeural` (male).
+
+**Proven before proposing, not after:** real Urdu text through the full
+pipeline — synth 1.8s, MP3 -> OGG/Opus mono 48kHz in 0.2s via PyAV, container
+and codec verified by probing the output file. Samples were sent to the team to
+judge the voice by ear.
+
+**Why this is better than what it replaced:**
+
+- No credentials to create, distribute to teammates, or install on the ECS box.
+  One fewer secret, and one fewer thing to misconfigure on Day 4.
+- Smaller dependency tree: `google-cloud-texttospeech` drags in grpc, protobuf
+  and google-auth. `edge-tts` is tiny.
+- PyAV was already present via faster-whisper, so **no ffmpeg binary** is
+  required anywhere.
+- Synthesis latency is irrelevant regardless: §3.4 pre-generates voice notes
+  when a schedule is confirmed, so nothing is synthesised in the reminder path.
+
+**The honest caveat, recorded so nobody is surprised later:** edge-tts uses the
+endpoint behind Edge's read-aloud feature. It is not a documented public API.
+Fine for a hackathon; if this outlives the demo, Azure Speech's F0 tier has the
+identical voices free for 500k characters a month. It also needs internet — if
+the venue has none, §6's Piper fallback still stands.
+
+**Updated everywhere it is named**, not just in code: AGENTS.md §6 table and
+voice notes, §13 env vars, §14 Phase 5 prompt / kill switch / "your turn";
+`requirements.txt`; `.env.example`; `config.py`; and
+`MedNuskha_Setup_Guide.pdf` §5, which previously told the team to create a
+Google Cloud service account.
+
+**New env var:** `TTS_VOICE` (default `ur-PK-UzmaNeural`).
+**Removed:** `GOOGLE_APPLICATION_CREDENTIALS`.
 
 ### 2026-08-22 — Session 3 (Phases 1 and 2)
 

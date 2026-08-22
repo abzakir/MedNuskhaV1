@@ -42,7 +42,8 @@ class Settings(BaseSettings):
     dashscope_api_key: str = ""
 
     # --- Voice ---
-    google_application_credentials: str = ""
+    #: edge-tts voice id. ur-PK-UzmaNeural (female) or ur-PK-AsadNeural (male).
+    tts_voice: str = "ur-PK-UzmaNeural"
     whisper_model: str = "base"
 
     # --- Data ---
