@@ -1,27 +1,93 @@
-"""faster-whisper, running locally on CPU. No API key, no quota.
+"""Speech to text for inbound voice notes.
 
-Model comes from WHISPER_MODEL (base, or small for better Urdu). Urdu accuracy
-is strong for the short utterances we care about - "le li hai", "abhi nahi".
+Two engines, deliberately:
 
-An inbound audio message is downloaded via whatsapp.client.download_media,
-transcribed here, and the text fed into agent.interpret exactly as if the
-patient had typed it.
+* **Groq `whisper-large-v3`** first. Free tier, and measurably better on Urdu
+  than anything that runs on a laptop CPU.
+* **`faster-whisper` locally** as the fallback, when the pool is rate-limited
+  or the venue's wifi dies. Slower and less accurate, but it has no quota and
+  needs no network - which is exactly what you want at 11pm before a demo.
+
+Use `small`, never `base`. Measured 2026-08-22: `base` transcribed
+"ابھی نہیں" (*abhi nahi*, "not now") as "اب ہی" (*ab hi*, "right now"),
+inverting the meaning of a dose reply.
+
+A transcript is never expected to be perfect. `agent.interpret` reads it with a
+language model, not a regex, so "leli hai" still means "I took it" - and
+section 11's confidence floor catches the cases where it genuinely does not.
 """
 
 from __future__ import annotations
 
-_PHASE = "Phase 5 - voice"
+import asyncio
+import logging
+
+from app.agent import llm
+from app.config import settings
+
+log = logging.getLogger(__name__)
+
+_model = None
 
 
 def get_model():
-    """Load the faster-whisper model once per process and cache it.
+    """Load faster-whisper once per process and cache it.
 
-    First load downloads weights - warm it at startup, not on the first
-    patient voice note.
+    The first load downloads weights, so it is warmed at startup rather than
+    on the first patient voice note.
     """
-    raise NotImplementedError(_PHASE)
+    global _model
+    if _model is None:
+        from faster_whisper import WhisperModel
+
+        log.info("loading faster-whisper %r (first run downloads weights)",
+                 settings.whisper_model)
+        _model = WhisperModel(settings.whisper_model, device="cpu",
+                              compute_type="int8")
+        log.info("faster-whisper ready")
+    return _model
+
+
+async def warm_up() -> None:
+    """Preload the local model so the fallback is instant when it is needed."""
+    try:
+        await asyncio.to_thread(get_model)
+    except Exception as exc:  # noqa: BLE001 - the cloud path still works
+        log.warning("could not warm the local ASR model: %s", exc)
+
+
+def _transcribe_local(audio: bytes, language: str) -> str:
+    import io
+
+    segments, _info = get_model().transcribe(
+        io.BytesIO(audio), language=language, beam_size=5, vad_filter=True)
+    return " ".join(s.text.strip() for s in segments).strip()
 
 
 async def transcribe(audio: bytes, language: str = "ur") -> str:
-    """Transcribe an audio clip to text."""
-    raise NotImplementedError(_PHASE)
+    """Transcribe a voice note. Returns "" if nothing could be made of it.
+
+    Never raises: a failed transcription becomes an empty string, which
+    `interpret` turns into `unclear`, which asks the patient one short
+    question. That is a far better outcome than an exception swallowing a
+    reply.
+    """
+    if not audio:
+        return ""
+
+    try:
+        text = await llm.transcribe(audio, filename="voice.ogg", language=language)
+        if text:
+            log.info("transcribed %d bytes via Groq: %r", len(audio), text[:80])
+            return text
+        log.warning("Groq returned an empty transcript - trying locally")
+    except Exception as exc:  # noqa: BLE001 - fall through to the local model
+        log.warning("cloud transcription unavailable (%s) - using local model", exc)
+
+    try:
+        text = await asyncio.to_thread(_transcribe_local, audio, language)
+        log.info("transcribed %d bytes locally: %r", len(audio), text[:80])
+        return text
+    except Exception as exc:  # noqa: BLE001
+        log.error("local transcription failed too: %s", exc)
+        return ""

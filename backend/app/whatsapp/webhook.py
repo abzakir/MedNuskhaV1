@@ -239,8 +239,91 @@ async def _route(msg: InboundMessage, context: dict) -> None:
         await handle_button(msg, context)
         return
 
-    log.debug("no handler yet for kind=%s from %s (Phase 3 attaches the agent)",
-              msg.kind, context["number"])
+    if context.get("patient_id") is None:
+        # A caretaker wrote to us. Nothing to interpret against - the agent
+        # speaks to patients, not carers.
+        log.info("message from caretaker %s - no dose flow to apply",
+                 context.get("caretaker_id"))
+        return
+
+    if msg.kind in ("text", "audio"):
+        await handle_patient_reply(msg, context)
+        return
+
+    log.info("ignoring %s message from %s", msg.kind, context["number"])
+
+
+async def handle_patient_reply(msg: InboundMessage, context: dict) -> None:
+    """Typed or spoken reply -> Intent -> action -> one warm message back.
+
+    A voice note is transcribed first and then treated exactly like a typed
+    message, which is the whole point of section 14's Phase 5: voice is a
+    doorway, not a separate code path.
+    """
+    from app.agent import respond as responder
+    from app.agent.interpret import interpret
+
+    patient = await asyncio.to_thread(_load_patient, context["patient_id"])
+    if patient is None:
+        return
+
+    text = msg.text or ""
+    from_voice = False
+
+    if msg.kind == "audio":
+        from app.voice import asr
+
+        audio = getattr(msg, "media_bytes", None)
+        if not audio:
+            log.warning("audio message %s arrived with no audio", msg.wa_message_id)
+            return
+        text = await asr.transcribe(audio, language=patient.language or "ur")
+        from_voice = True
+        await asyncio.to_thread(_store_transcript, msg.wa_message_id, text)
+        if not text:
+            log.warning("could not transcribe %s - asking the patient to repeat",
+                        msg.wa_message_id)
+
+    open_doses = await asyncio.to_thread(responder.open_doses_for, patient.id)
+    log.info("patient %s has %d open dose(s)", patient.id, len(open_doses))
+
+    probe = _Probe(text=text, payload=msg.payload)
+    intent = await interpret(probe, patient, open_doses)
+    intent.from_voice = from_voice
+
+    await responder.respond(intent, patient)
+
+
+class _Probe:
+    """The minimal shape `interpret` needs, so a transcript can stand in for
+    the original message without mutating it."""
+
+    __slots__ = ("text", "payload")
+
+    def __init__(self, text: str | None, payload: str | None):
+        self.text = text
+        self.payload = payload
+
+
+def _load_patient(patient_id: str):
+    with session_scope() as session:
+        patient = session.get(Patient, patient_id)
+        if patient is None:
+            return None
+        session.expunge(patient)
+        return patient
+
+
+def _store_transcript(wa_message_id: str, text: str) -> None:
+    """Keep the transcript on the message row, so a bad one is debuggable."""
+    with session_scope() as session:
+        row = session.query(MessageLog).filter(
+            MessageLog.wa_message_id == wa_message_id).first()
+        if row is None:
+            return
+        row.body = text or row.body
+        session.add(row)
+        session.commit()
 
 
 async def handle_button(msg: InboundMessage, context: dict) -> None:

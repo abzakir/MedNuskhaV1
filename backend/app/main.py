@@ -6,6 +6,7 @@ or via:    make dev   /   .\\dev.ps1
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -25,6 +26,12 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("mednuskha")
+
+
+async def _warm_asr() -> None:
+    from app.voice import asr
+
+    await asr.warm_up()
 
 
 @asynccontextmanager
@@ -51,6 +58,10 @@ async def lifespan(app: FastAPI):
     # lock so a second worker - or a teammate's dev server pointed at the same
     # Supabase project - cannot fire every reminder again (section 17).
     start_scheduler()
+
+    # Preload the local speech model so the offline fallback is instant the
+    # first time the cloud one is rate-limited.
+    asyncio.create_task(_warm_asr())
 
     yield
 

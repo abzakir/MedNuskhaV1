@@ -24,9 +24,14 @@ What runs right now:
 **Proven by test, not assumed:** 42/42 dose loop, 16/16 inbound bridge path,
 17/17 key rotation, 4 live WhatsApp sends.
 
-**What is still stubbed:** the whole agent (`interpret`, `respond`,
-`guardrails`, `knowledge`), the dashboard and its REST API, TTS
-pre-generation, ASR wiring, and both PDF reports. Phases 3 to 8.
+**What is still stubbed:** the dashboard and its REST API (Phase 4), TTS
+pre-generation (Phase 5), both PDF reports (Phase 6), prescription OCR
+(Phase 7), and deployment (Phase 8).
+
+**The agent is live (Phase 3).** A typed or spoken reply in Urdu, Roman Urdu or
+English is classified, drives the dose state machine, and gets one short warm
+answer back. Guardrails run on every outbound message. 38/38 agent checks and
+32/32 guardrail tests pass against live Groq and the live database.
 
 **Known gaps:**
 
@@ -39,22 +44,22 @@ pre-generation, ASR wiring, and both PDF reports. Phases 3 to 8.
 
 ## Current phase
 
-**Phases 1 and 2 are complete and verified on real hardware.** Phase 3 (the
-agent) is next and is fully unblocked - the Groq keys work.
+**Phases 1, 2 and 3 are complete and verified.** Phase 4 (the dashboard) is
+next and is fully unblocked.
 
 ## Next steps
 
-1. **Phase 3 - the agent.** `interpret`, `respond`, `guardrails`, `knowledge`,
-   and `tests/test_guardrails.py` with 12+ adversarial cases. `i18n/strings.py`
-   is already written.
-2. **Implement the no-buttons reply rule** while doing it (see decisions log).
-   A typed "haan" must resolve to the right dose without asking a 68-year-old
-   "which one?" unless it genuinely cannot be determined.
-3. **Phase 4 - the dashboard.** Fully unblocked.
-4. Phase 5 voice wiring, Phase 6 reports, Phase 8 deploy.
+1. **Phase 4 - the website.** Supabase Auth (email/password now, Google once
+   the provider is enabled), family overview, patient page with live dose
+   status, add-patient form, and the add-medicine flow that calls
+   `knowledge.fetch_draft` and requires the caretaker to confirm before
+   anything activates.
+2. **Phase 5** - pre-generate voice notes when a schedule is confirmed and
+   attach them to reminders. ASR is already wired.
+3. **Phase 6** - the two PDFs, plus the daily course-end job.
+4. **Phase 8** - deploy. WeasyPrint needs the Ubuntu box.
 
-Nothing external is outstanding. No account, key or approval is being waited
-on.
+Nothing external is outstanding.
 
 ## Environment / setup
 
@@ -194,7 +199,68 @@ Phase 8, where a CRLF Makefile breaks.
   exactly why §11 sets a 0.6 confidence floor: on a garbled transcript the
   agent asks one short clarifying question rather than guessing.
 
+- **`reasoning_effort: "none"` is required for qwen3.6-27b on Groq.** Without
+  it every reply is prefixed with a `<think>` block that would reach the
+  patient and break JSON parsing. `reasoning_format: "hidden"` returns an
+  EMPTY string - worse. Verified live.
+- **Deleting a caretaker fails while a `medicine_reference` row names them** in
+  `confirmed_by`. Fine in production (caretakers are not deleted), but any
+  cleanup script must remove reference rows first.
+- **A `Patient` object detached with `expunge()` after later commits is
+  expired** and raises `DetachedInstanceError` on attribute access. Call
+  `refresh()` immediately before `expunge()`.
+
 ## Decisions log
+
+### 2026-08-23 — Session 6 (Phase 3: the agent)
+
+**Done:** `interpret`, `respond`, `guardrails`, `knowledge`, `llm`, `voice/asr`,
+`i18n/strings`, and `tests/test_guardrails.py`. Wired into the webhook so a
+typed or spoken reply now acts. 38/38 agent checks against live Groq and the
+live database; 32/32 guardrail tests.
+
+**Invariant 2's replacement is implemented and tested.** With buttons gone,
+`interpret.resolve_dose` resolves a reply against the doses actually awaiting
+an answer: an explicit payload wins if present, one open dose is unambiguous,
+several open doses are disambiguated by the medicine name in the reply, and
+anything still ambiguous returns `unclear` so the agent asks instead of
+guessing. Verified: with two doses open and a bare "haan le li", **neither**
+dose is marked taken and the patient is asked which medicine.
+
+**Key decisions:**
+
+- **Fast paths before the model.** "haan", "abhi nahi", "1", "2", STOP and the
+  emergency keywords are matched with regexes first. That saves a model call on
+  the most common reply in the system, works when every key is rate-limited,
+  and removes the model from the emergency path entirely.
+- **Keyword matching is the authority on emergencies, not the model.** If the
+  emergency regex fires, the intent is `emergency` regardless of what the model
+  said. A model deciding chest pain is routine is not a failure mode we accept.
+- **A short-message guard on the keyword matcher.** "le li" only counts as a
+  confirmation in a message of four words or fewer, because inside a longer
+  sentence it may well be "abhi tak nahi le li".
+- **Guardrails run on the OUTBOUND text, not the prompt.** A system prompt can
+  be talked around; a regex over the final message cannot. Deliberately
+  conservative: a false block costs one safe-but-unhelpful message plus a
+  caretaker alert, a false pass costs an elderly patient acting on invented
+  medical advice.
+- **`test_17` caught a real hole.** The dose-change rule matched "take two
+  tablets" but not "**took** two tablets", so a hypothetical framing passed.
+  Every tense is now covered - that framing is exactly how a model gets talked
+  around its instructions.
+- **Invariant 9 is enforced by structure, not discipline.** There is no code
+  path from a patient's question to a live model call about a medicine.
+  `_on_question` calls `get_confirmed()` and, on None, sends the "no confirmed
+  information" line and alerts the caretaker. `get_any()` exists for the
+  dashboard and is documented as never for the reply path.
+- **ASR falls back automatically.** Groq `whisper-large-v3` first, local
+  `faster-whisper` when the pool is down. A failed transcription returns "",
+  which becomes `unclear`, which asks the patient to repeat - never an
+  exception that swallows a reply.
+
+**Before touching this area next:** `agent/llm.py` is not in the section 7
+layout. It was added so interpret, respond and knowledge share one pooled
+client instead of three copies of the same retry logic.
 
 ### 2026-08-23 — Session 5 (WhatsApp: Green API -> Baileys, and live)
 
