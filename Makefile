@@ -5,7 +5,7 @@
 # installed; use the equivalent PowerShell shims instead:
 #     ./dev.ps1    ./test.ps1    ./seed.ps1    ./install.ps1
 
-.PHONY: install dev backend frontend test seed clean
+.PHONY: install dev backend frontend bridge test seed clean
 
 VENV     := backend/.venv
 VENV_BIN := $(VENV)/bin

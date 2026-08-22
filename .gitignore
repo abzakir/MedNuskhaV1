@@ -17,6 +17,12 @@ venv/
 .pytest_cache/
 *.egg-info/
 
+# WhatsApp login credentials (Baileys session). Anyone holding this
+# folder can read the linked account's messages.
+whatsapp-bridge/auth_info/
+auth_info/
+auth_info_*/
+
 # node / next
 node_modules/
 .next/

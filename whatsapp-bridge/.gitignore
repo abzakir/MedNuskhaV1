@@ -1,0 +1,6 @@
+# WhatsApp login credentials. Anyone with this folder can read the linked
+# account's messages. NEVER commit it.
+auth_info/
+auth_info_*/
+*.session
+node_modules/
