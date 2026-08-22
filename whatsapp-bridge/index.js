@@ -30,6 +30,7 @@ import {
   downloadMediaMessage,
   fetchLatestBaileysVersion,
   getContentType,
+  isLidUser,
   makeWASocket,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys'
@@ -68,6 +69,40 @@ function normalise(raw) {
 
 const toJid = (number) => `${normalise(number)}@s.whatsapp.net`
 const fromJid = (jid) => normalise(String(jid || '').split('@')[0].split(':')[0])
+
+/**
+ * Work out the real phone number behind a message.
+ *
+ * WhatsApp increasingly addresses senders by LID - a privacy identifier like
+ * 109784363725047@lid - instead of their phone number. Observed live on
+ * 2026-08-23: a patient's reply arrived from a LID and could not be matched to
+ * anyone, which in a medication app means a confirmed dose silently going
+ * unrecorded.
+ *
+ * Three sources, best first:
+ *   1. key.remoteJidAlt / participantAlt - the phone number the server sent
+ *      alongside the LID.
+ *   2. the signal store's LID -> PN mapping, learned from earlier traffic.
+ *   3. the LID itself, so the message is still delivered and logged rather
+ *      than dropped. The backend will not match it, and says so loudly.
+ */
+async function resolveSender(m) {
+  const jid = m.key.remoteJid || ''
+  if (!isLidUser(jid)) return { from: fromJid(jid), lid: null }
+
+  const alt = m.key.remoteJidAlt || m.key.participantAlt
+  if (alt) return { from: fromJid(alt), lid: fromJid(jid) }
+
+  try {
+    const pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(jid)
+    if (pn) return { from: fromJid(pn), lid: fromJid(jid) }
+  } catch (err) {
+    log.warn(`LID lookup failed for ${jid}: ${err.message}`)
+  }
+
+  log.warn(`could not resolve ${jid} to a phone number - forwarding the LID`)
+  return { from: fromJid(jid), lid: fromJid(jid), unresolved: true }
+}
 
 function allowed(number) {
   return ALLOWLIST.length === 0 || ALLOWLIST.includes(normalise(number))
@@ -153,7 +188,7 @@ async function handleIncoming(m) {
   const jid = m.key.remoteJid || ''
   if (jid.endsWith('@g.us') || jid === 'status@broadcast') return  // groups/status
 
-  const from = fromJid(jid)
+  const { from, lid, unresolved } = await resolveSender(m)
   const contentType = getContentType(m.message)
 
   const payload = {
@@ -164,7 +199,7 @@ async function handleIncoming(m) {
     text: null,
     buttonId: null,
     audioBase64: null,
-    raw: { contentType },
+    raw: { contentType, lid: lid || undefined, unresolved: unresolved || undefined },
   }
 
   switch (contentType) {
@@ -241,7 +276,7 @@ async function handleIncoming(m) {
   }
 
   log.info(
-    `in  ${from} ${payload.type}` +
+    `in  ${from}${lid ? ` (lid ${lid})` : ''} ${payload.type}` +
       (payload.buttonId ? ` [${payload.buttonId}]` : '') +
       (payload.text ? ` ${JSON.stringify(payload.text).slice(0, 60)}` : '')
   )
@@ -286,6 +321,18 @@ function requireReady(res) {
 
 const app = express()
 app.use(express.json({ limit: '25mb' }))
+
+// Diagnostic: what does WhatsApp say about a number, and does it hand back a
+// LID we can map replies to?
+app.get('/resolve/:number', async (req, res) => {
+  if (!requireReady(res)) return
+  try {
+    const result = await sock.onWhatsApp(normalise(req.params.number))
+    res.json({ query: normalise(req.params.number), result })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
 
 app.get('/status', (_req, res) => {
   res.json({
