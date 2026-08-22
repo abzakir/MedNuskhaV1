@@ -100,6 +100,8 @@ the `feat(scope): ...` form from §12. `.gitattributes` normalises the repo to
 LF (with `.ps1` kept CRLF) because the backend ships to an Ubuntu ECS box in
 Phase 8, where a CRLF Makefile breaks.
 
+**Team-facing doc:** `MedNuskha_Setup_Guide.pdf` at the repo root is the complete walkthrough of every external task — Meta WhatsApp, Supabase, DashScope, ngrok, Google Cloud TTS, ECS + Vercel deploy — plus a troubleshooting table and a tick-off checklist. Hand it to any teammate doing account setup. Regenerate it if the steps change.
+
 **WhatsApp templates:** none submitted yet. All four are pending action.
 
 ## Gotchas discovered
