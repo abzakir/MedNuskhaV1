@@ -7,10 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   authConfigured,
+  getAuthSettings,
   getSession,
   signInWithEmail,
   signInWithGoogle,
   signUpWithEmail,
+  type AuthSettings,
 } from "@/lib/supabase";
 
 export default function LoginPage() {
@@ -22,12 +24,17 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [settings, setSettings] = useState<AuthSettings | null>(null);
 
   useEffect(() => {
     getSession().then((s) => {
       if (s) router.replace("/dashboard");
     });
+    getAuthSettings().then(setSettings);
   }, [router]);
+
+  const googleEnabled = settings?.providers.google ?? false;
+  const needsEmailConfirmation = settings ? !settings.autoconfirm : false;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -39,7 +46,13 @@ export default function LoginPage() {
         await signUpWithEmail(email, password, name);
         const session = await getSession();
         if (session) router.push("/dashboard");
-        else setNotice("Account created. Check your email to confirm, then sign in.");
+        else
+          setNotice(
+            "Account created. Supabase has email confirmation switched on, so " +
+              "check your inbox for the link, then come back and sign in. " +
+              "(You can turn that off in Supabase → Authentication → " +
+              "Sign In / Providers → Email.)",
+          );
       } else {
         await signInWithEmail(email, password);
         router.push("/dashboard");
@@ -143,6 +156,13 @@ export default function LoginPage() {
               </p>
             )}
 
+            {mode === "up" && needsEmailConfirmation && (
+              <p className="rounded-lg bg-sky-50 p-3 text-xs text-sky-900 dark:bg-sky-950/50 dark:text-sky-200">
+                This project requires email confirmation, so you&apos;ll get a link
+                before you can sign in. Use a real address.
+              </p>
+            )}
+
             <Button type="submit" className="w-full" disabled={busy || !authConfigured}>
               {busy ? "Please wait…" : mode === "in" ? "Sign in" : "Create account"}
             </Button>
@@ -158,11 +178,22 @@ export default function LoginPage() {
             variant="outline"
             className="w-full"
             onClick={google}
-            disabled={busy || !authConfigured}
+            disabled={busy || !authConfigured || !googleEnabled}
+            title={
+              googleEnabled
+                ? undefined
+                : "Google sign-in is not enabled on this Supabase project yet"
+            }
           >
             <GoogleMark />
             Continue with Google
           </Button>
+
+          {settings && !googleEnabled && (
+            <p className="mt-2 text-center text-xs text-muted-foreground">
+              Google isn&apos;t switched on for this project yet &mdash; use email above.
+            </p>
+          )}
 
           <p className="mt-5 text-center text-sm text-muted-foreground">
             {mode === "in" ? "New here?" : "Already have an account?"}{" "}
