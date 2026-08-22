@@ -20,6 +20,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,6 +32,12 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 GROQ_BASE = "https://api.groq.com/openai/v1"
+
+#: Reasoning models wrap their scratchpad in <think>...</think>. We suppress it
+#: at request time, but strip it here too - a stray thinking block reaching a
+#: 68-year-old, or a JSON parser, is not a failure mode worth risking on one
+#: layer of defence.
+_THINK = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
 DASHSCOPE_BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
 
@@ -149,6 +156,16 @@ def ring() -> KeyRing:
     return _ring
 
 
+def strip_reasoning(text: str) -> str:
+    """Remove any <think> block a reasoning model emitted."""
+    cleaned = _THINK.sub("", text or "").strip()
+    # An unterminated block means the reply was cut off mid-thought; there is
+    # no usable answer in it.
+    if "<think>" in cleaned.lower():
+        cleaned = cleaned[:cleaned.lower().index("<think>")].strip()
+    return cleaned
+
+
 def _retry_after(response: httpx.Response) -> float | None:
     raw = response.headers.get("retry-after")
     if raw:
@@ -187,6 +204,8 @@ async def chat(
             }
             if json_mode:
                 body["response_format"] = {"type": "json_object"}
+            if key.provider == "groq" and settings.groq_reasoning_effort:
+                body["reasoning_effort"] = settings.groq_reasoning_effort
 
             try:
                 resp = await client.post(
@@ -223,7 +242,7 @@ async def chat(
 
             data = resp.json()
             try:
-                return data["choices"][0]["message"]["content"] or ""
+                return strip_reasoning(data["choices"][0]["message"]["content"])
             except (KeyError, IndexError) as exc:
                 raise LLMError(f"unexpected response shape: {data}") from exc
 

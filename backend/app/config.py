@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     groq_whisper_model: str = "whisper-large-v3"
     dashscope_model: str = "qwen-plus"
 
+    #: qwen3.6-27b is a REASONING model - by default it prefixes every reply
+    #: with a <think> block, which corrupts both short patient messages and
+    #: JSON parsing. "none" suppresses it. Verified 2026-08-22: with no extra
+    #: params the model returned "<think>Here's a thinking process...";
+    #: reasoning_format="hidden" returned an EMPTY string; reasoning_effort
+    #: "none" returned exactly "ok". Leave blank to disable the parameter.
+    groq_reasoning_effort: str = "none"
+
     #: Seconds a key sits out after a rate-limit response, when the provider
     #: does not send a Retry-After header.
     llm_cooldown_seconds: int = 60
