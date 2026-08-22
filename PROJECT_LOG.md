@@ -40,38 +40,33 @@ adversarial case lists are already written out in them as data.
 
 ## Current phase
 
-**Phase 0 done. Phase 1 (WhatsApp transport) started, then paused on a blocker.**
+**Phase 1 (WhatsApp transport): code complete and verified except the one step
+that needs Meta.** The team asked Claude to keep building while they sort out
+the Meta account, so Phase 2 follows immediately.
 
-Meta's current Cloud API reference was fetched and the field shapes confirmed
-(see Gotchas) before any client code was written, per §14 Phase 1. Writing then
-paused: the team reported a **problem with their Meta account**, so there is no
-token to build against and no way to verify the gate.
+Verified against the live database (26/26 checks): number normalisation, all
+five inbound payload shapes, the GET verify handshake returning plain text,
+POST returning 200 in under 2s, message_log persistence, dose id extraction
+from the button payload, deduplication on a redelivered message, and delivery
+receipts updating the outbound row.
 
-The team chose to **retry Meta with the free test number** rather than switch
-provider, and asked Claude to wait rather than build ahead. Alternatives were
-evaluated and are recorded in the decisions log in case Meta stays blocked.
+**Not verified, and cannot be until Meta works:** an actual send to an actual
+phone, and a real button tap. That is the remaining half of the §14 Phase 1
+gate.
 
 ## Next steps
 
-1. **Capture the exact Meta error text.** Not a summary — the literal message.
-   The three common failures have completely different fixes and are
-   indistinguishable from a paraphrase.
-2. **Do not try to register your own phone number as the sender.** Meta issues
-   a free test number automatically when the WhatsApp product is added. A
-   number that already has WhatsApp on it can never be registered as a sender.
-   This is the single most common self-inflicted block.
-3. Business verification is **not** required to use the test number. If Meta
-   prompts for it, skip and continue.
-4. Once the app exists: capture `WHATSAPP_PHONE_NUMBER_ID` and
-   `WHATSAPP_WABA_ID`, whitelist the team's numbers (the spare number goes here
-   as a *recipient*), and create the permanent System User token.
-5. Submit the four templates from §10.
-6. Then resume Phase 1 — the client, parser and webhook are designed and the
-   API shapes verified; only the writing is left.
-
-**If Meta cannot be unblocked:** the fallback analysis is in the decisions log.
-Twilio's WhatsApp Sandbox needs no Meta account at all and removes the template
-wait, at the cost of tap buttons and a Twilio-branded US number.
+1. **Meta account** (blocked, team is on it). Capture the literal error text.
+   Do NOT register your own number as the sender — Meta issues a free test
+   number, and a number that already has WhatsApp can never be a sender.
+2. When the token lands: fill `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`,
+   `WHATSAPP_WABA_ID`, `WHATSAPP_VERIFY_TOKEN` in `.env`, then run
+   `python scripts/send_test.py <number>` and tap a button. That closes the
+   Phase 1 gate with no code changes expected.
+3. Templates from §10 still need submitting. Note the language code chosen and
+   pass it to `send_template` — a mismatch fails silently.
+4. `DASHSCOPE_API_KEY` is still empty; Phase 3's `interpret` and `knowledge`
+   cannot run without it (guardrails and i18n can, and are pure logic).
 
 ## Environment / setup
 
