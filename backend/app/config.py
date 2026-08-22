@@ -44,7 +44,9 @@ class Settings(BaseSettings):
     # --- Voice ---
     #: edge-tts voice id. ur-PK-UzmaNeural (female) or ur-PK-AsadNeural (male).
     tts_voice: str = "ur-PK-UzmaNeural"
-    whisper_model: str = "base"
+    #: Use "small". "base" inverts Urdu negations - "abhi nahi" (not now)
+    #: comes back as "ab hi" (right now). Measured, see PROJECT_LOG.md.
+    whisper_model: str = "small"
 
     # --- Data ---
     database_url: str = ""

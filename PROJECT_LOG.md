@@ -191,6 +191,24 @@ Phase 8, where a CRLF Makefile breaks.
   faster-whisper dependency, so **no ffmpeg binary is needed** on the dev
   machine or the ECS box. Verified end to end on real Urdu text.
 
+- **`WHISPER_MODEL=base` is unsafe for Urdu. Use `small`.** Measured
+  2026-08-22 on synthesised Urdu of the exact phrases patients send: `base`
+  transcribed **"ابھی نہیں" (*abhi nahi*, "not now") as "اب ہی" (*ab hi*,
+  "right now")** — a meaning inversion on a dose reply. `small` returns it
+  exactly. AGENTS.md §6 originally assumed short utterances were the easy case
+  for Urdu ASR; the opposite is true. Long phrases ("seene mein dard ho raha
+  hai", "goli khatam ho gayi hai") come back verbatim on both models, while
+  two-word replies are where `base` fails.
+  Cost of the upgrade: ~0.5x realtime instead of ~1.1x on CPU, so about 5s for
+  a 2s clip. Irrelevant — ASR runs in a background task, never on the webhook
+  path.
+- **Transcription does not need to be perfect, and must not be treated as if it
+  is.** `small` still returns "لیلی ہے" for "لے لی ہے" — spacing and spelling
+  drift. That is fine because Qwen reads the transcript, not a regex, and
+  "leli hai" is still unmistakably "I took it" to a language model. It is also
+  exactly why §11 sets a 0.6 confidence floor: on a garbled transcript the
+  agent asks one short clarifying question rather than guessing.
+
 ## Decisions log
 
 ### 2026-08-22 — Session 4 (TTS stack swap)

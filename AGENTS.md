@@ -216,9 +216,13 @@ hackathon demo, or is covered by the Alibaba Cloud hackathon credits.
 | Medicine lookup | **Qwen** (DashScope) with web search grounding if available | hackathon credits | Fetches a *draft* only — never trusted until a caretaker confirms it |
 
 **On the voice stack specifically:**
-- `faster-whisper` runs on CPU with the `base` or `small` model. Urdu accuracy is
-  strong for short utterances like "le li hai", and it costs nothing per call —
-  no quota to exhaust the night before the demo.
+- `faster-whisper` runs on CPU and costs nothing per call — no quota to
+  exhaust the night before the demo. **Use `small`, not `base`.** Measured
+  2026-08-22: `base` transcribed "ابھی نہیں" (*abhi nahi*, "not now") as
+  "اب ہی" (*ab hi*, "right now") — inverting the meaning of a dose reply.
+  `small` transcribes it exactly. Short utterances are the *hard* case for
+  Urdu ASR, not the easy one; longer phrases like "seene mein dard ho raha
+  hai" come back verbatim on both models.
 - `edge-tts` reaches Microsoft's neural voices — the same ones Azure sells —
   with **no account, no card and no API key**. Two Pakistani Urdu voices exist:
   `ur-PK-UzmaNeural` (female, the one we use) and `ur-PK-AsadNeural` (male).
@@ -470,7 +474,7 @@ DASHSCOPE_API_KEY=                  # Qwen + Qwen-VL
 
 # Voice
 TTS_VOICE=ur-PK-UzmaNeural          # edge-tts; ur-PK-AsadNeural is the male voice
-WHISPER_MODEL=base                  # or "small" for better Urdu
+WHISPER_MODEL=small                 # "base" inverts Urdu negations - see PROJECT_LOG
 
 # Data
 DATABASE_URL=                       # Supabase Postgres connection string
