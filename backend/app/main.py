@@ -81,6 +81,18 @@ app.include_router(api_router)
 app.include_router(webhook_router)
 
 
+async def _whatsapp_health() -> dict:
+    """Ask the bridge whether WhatsApp is actually connected."""
+    from app.whatsapp.client import bridge_status
+
+    status = await bridge_status()
+    return {
+        "state": status.get("state", "unknown"),
+        "number": status.get("me"),
+        "bridge": settings.bridge_url,
+    }
+
+
 def _llm_health() -> dict:
     """Key-pool health. Never contains key material - see llm.KeyRing.status."""
     if not settings.llm_configured:
@@ -98,7 +110,7 @@ def _llm_health() -> dict:
 
 
 @app.get("/api/health", tags=["meta"])
-def health() -> dict:
+async def health() -> dict:
     """Liveness and configuration check. Always 200 while the process is up."""
     return {
         "status": "ok",
@@ -106,7 +118,7 @@ def health() -> dict:
         "version": app.version,
         "timezone": settings.timezone,
         "database": "connected" if check_connection() else "not connected",
-        "whatsapp": "configured" if settings.whatsapp_configured else "not configured",
+        "whatsapp": await _whatsapp_health(),
         "scheduler": "running" if is_running() else "stopped",
         "llm": _llm_health(),
         "missing_env": settings.missing_required(),

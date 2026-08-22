@@ -1,22 +1,25 @@
-"""The ONLY module permitted to call graph.facebook.com (invariant 6).
+"""The ONLY module that talks to WhatsApp (invariant 6).
 
-Signatures are frozen in AGENTS.md section 9.
+Since 2026-08-22 that means the local Baileys bridge in `whatsapp-bridge/`,
+not graph.facebook.com. The bridge owns the socket; this module owns the
+message. Signatures are still the frozen ones from AGENTS.md section 9, so
+nothing upstream - the ticker, the state machine, the agent - changed at all.
 
-Every request and response shape here was taken from Meta's Cloud API
-reference on 2026-08-22, not from memory (section 12). The shapes are also
-recorded in PROJECT_LOG.md under Gotchas so a later session need not re-fetch:
+Two behaviours differ from the Meta implementation and are deliberate:
 
-    POST {base}/{PHONE_NUMBER_ID}/messages
-    Authorization: Bearer <token>;  Content-Type: application/json
-    -> 200 {"messages": [{"id": "wamid...."}], ...}
-
-Numbers go out as digits only, no + and no leading zero (section 10).
-Every send is written to message_log, success or failure.
+* There are no server-side templates. `send_template` renders the copy from
+  i18n/strings.py locally. That is strictly better: the wording is now
+  version-controlled and changeable in a commit instead of an approval queue.
+* Interactive buttons are not available to non-official clients, so the bridge
+  renders the options as numbered text. `send_template` still takes
+  `button_payloads` and still returns which mode was used, so the caller does
+  not have to care.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import re
 from typing import Any
@@ -25,6 +28,7 @@ import httpx
 
 from app.config import settings
 from app.db import session_scope
+from app.i18n import strings
 from app.models import Caretaker, MessageLog, Patient
 
 log = logging.getLogger(__name__)
@@ -32,20 +36,27 @@ log = logging.getLogger(__name__)
 #: Button payloads carry the dose id (invariant 2): "TAKEN:<dose_id>".
 DOSE_PAYLOAD_RE = re.compile(r"^(TAKEN|LATER|SKIP):(?P<dose_id>[0-9a-fA-F-]{36})$")
 
+#: Maps the positional `body_vars` in the section 9 signature onto the named
+#: placeholders in i18n/strings.py. Keeping the signature frozen is worth this
+#: small table.
+TEMPLATE_VARS: dict[str, tuple[str, ...]] = {
+    "dose_reminder": ("name", "hour", "medicine", "note"),
+    "dose_followup": ("name", "medicine"),
+    "caretaker_alert": ("patient", "hour", "medicine"),
+    "patient_optin": ("name", "caretaker"),
+}
+
+#: Which i18n button labels go with which template.
+TEMPLATE_BUTTONS: dict[str, tuple[str, ...]] = {
+    "dose_reminder": ("btn_taken", "btn_later"),
+    "dose_followup": ("btn_taken", "btn_later"),
+}
+
 _client: httpx.AsyncClient | None = None
 
 
 class WhatsAppError(RuntimeError):
-    """A non-2xx response from Meta, carrying whatever detail Meta gave us."""
-
-    def __init__(self, status: int, body: Any):
-        self.status = status
-        self.body = body
-        detail = body
-        if isinstance(body, dict):
-            err = body.get("error", {})
-            detail = f"{err.get('code')}/{err.get('error_subcode')} {err.get('message')}"
-        super().__init__(f"WhatsApp API {status}: {detail}")
+    """The bridge refused, or WhatsApp is not connected."""
 
 
 # --------------------------------------------------------------------------
@@ -54,7 +65,7 @@ class WhatsAppError(RuntimeError):
 
 
 def normalise_number(raw: str) -> str:
-    """Digits only, no + and no leading zero, e.g. 923001234567 (section 10).
+    """Digits only, no + and no leading zero: 923001234567 (section 10).
 
     Handles the three formats humans actually type for Pakistani numbers:
     +92 300 1234567, 0300 1234567, and 00923001234567.
@@ -62,7 +73,6 @@ def normalise_number(raw: str) -> str:
     digits = re.sub(r"\D", "", raw or "")
     if digits.startswith("00"):
         digits = digits[2:]
-    # A local Pakistani mobile: 03xxxxxxxxx -> 923xxxxxxxxx
     if digits.startswith("0"):
         digits = "92" + digits.lstrip("0")
     return digits
@@ -73,20 +83,10 @@ def normalise_number(raw: str) -> str:
 # --------------------------------------------------------------------------
 
 
-def _require_config() -> None:
-    if not settings.whatsapp_configured:
-        raise WhatsAppError(
-            0,
-            "WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID are not set. "
-            "Fill them in .env - see MedNuskha_Setup_Guide.pdf section 2.",
-        )
-
-
 def get_client() -> httpx.AsyncClient:
-    """One shared async client for the process."""
     global _client
     if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0))
+        _client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))
     return _client
 
 
@@ -97,19 +97,53 @@ async def close_client() -> None:
     _client = None
 
 
-def _base() -> str:
-    return f"https://graph.facebook.com/{settings.whatsapp_api_version}"
+async def bridge_status() -> dict:
+    """Ask the bridge whether WhatsApp is actually connected."""
+    try:
+        resp = await get_client().get(f"{settings.bridge_url}/status", timeout=5.0)
+        return resp.json()
+    except Exception as exc:  # noqa: BLE001 - health check reports, never raises
+        return {"state": "unreachable", "error": str(exc)}
 
 
-def _messages_url() -> str:
-    return f"{_base()}/{settings.whatsapp_phone_number_id}/messages"
+async def _call(path: str, payload: dict, *, kind: str, body: str | None,
+                template_name: str | None = None,
+                payloads: list[str] | None = None) -> str:
+    """POST to the bridge, log the outcome, return the message id."""
+    to = payload["to"]
+    url = f"{settings.bridge_url}{path}"
 
+    try:
+        resp = await get_client().post(url, json=payload)
+    except httpx.HTTPError as exc:
+        await _log_outbound(to=to, kind=kind, body=body, message_id=None,
+                            template_name=template_name, payloads=payloads,
+                            error=f"bridge unreachable: {exc}")
+        raise WhatsAppError(
+            f"WhatsApp bridge is not reachable at {settings.bridge_url}. "
+            f"Start it with `make bridge` (or .\\bridge.ps1)."
+        ) from exc
 
-def _headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {settings.whatsapp_token}",
-        "Content-Type": "application/json",
-    }
+    data: Any
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {"raw": resp.text}
+
+    if resp.status_code >= 300:
+        detail = data.get("error", data) if isinstance(data, dict) else data
+        hint = data.get("hint") if isinstance(data, dict) else None
+        await _log_outbound(to=to, kind=kind, body=body, message_id=None,
+                            template_name=template_name, payloads=payloads,
+                            error=str(detail), raw=data if isinstance(data, dict) else None)
+        raise WhatsAppError(f"{detail}{f' - {hint}' if hint else ''}")
+
+    message_id = data.get("id") if isinstance(data, dict) else None
+    await _log_outbound(to=to, kind=kind, body=body, message_id=message_id,
+                        template_name=template_name, payloads=payloads,
+                        raw=data if isinstance(data, dict) else None)
+    log.info("sent %s to %s -> %s", kind, to, message_id)
+    return message_id
 
 
 # --------------------------------------------------------------------------
@@ -120,21 +154,18 @@ def _headers() -> dict[str, str]:
 def _resolve_context(number: str, payloads: list[str] | None) -> dict[str, str | None]:
     """Work out who this message concerns, so message_log rows are useful.
 
-    Signatures in section 9 are frozen and carry no context arguments, so the
-    context is derived instead: the recipient identifies the patient or
-    caretaker, and the dose id is already inside the button payload
-    (invariant 2) whenever there is one.
+    Section 9 signatures are frozen and carry no context arguments, so context
+    is derived instead: the recipient identifies the patient or caretaker, and
+    the dose id is already inside the button payload (invariant 2).
     """
     ctx: dict[str, str | None] = {
-        "patient_id": None,
-        "caretaker_id": None,
-        "dose_event_id": None,
-    }
+        "patient_id": None, "caretaker_id": None, "dose_event_id": None}
 
+    dose_id: str | None = None
     for raw in payloads or []:
         m = DOSE_PAYLOAD_RE.match(raw)
         if m:
-            ctx["dose_event_id"] = m.group("dose_id")
+            dose_id = m.group("dose_id")
             break
 
     if not settings.database_configured:
@@ -142,6 +173,19 @@ def _resolve_context(number: str, payloads: list[str] | None) -> dict[str, str |
 
     try:
         with session_scope() as s:
+            # message_log.dose_event_id is a foreign key. A payload naming a
+            # dose that does not exist would fail the whole insert and lose the
+            # audit row for a message we actually sent. The payload text is
+            # stored either way, so nothing is lost by dropping just the link.
+            if dose_id is not None:
+                from app.models import DoseEvent
+
+                if s.get(DoseEvent, dose_id) is not None:
+                    ctx["dose_event_id"] = dose_id
+                else:
+                    log.warning("outbound payload names dose %s, which does not "
+                                "exist - logging without the link", dose_id)
+
             patient = s.query(Patient).filter(Patient.whatsapp_number == number).first()
             if patient:
                 ctx["patient_id"] = patient.id
@@ -159,70 +203,24 @@ def _write_log(**fields) -> None:
         with session_scope() as s:
             s.add(MessageLog(**fields))
             s.commit()
-    except Exception as exc:  # noqa: BLE001 - never let logging break a send
+    except Exception as exc:  # noqa: BLE001
         log.warning("message_log write failed: %s", exc)
 
 
-async def _log_outbound(
-    *,
-    to: str,
-    kind: str,
-    body: str | None,
-    wa_message_id: str | None,
-    template_name: str | None = None,
-    payloads: list[str] | None = None,
-    error: str | None = None,
-    raw: dict | None = None,
-) -> None:
+async def _log_outbound(*, to: str, kind: str, body: str | None,
+                        message_id: str | None, template_name: str | None = None,
+                        payloads: list[str] | None = None,
+                        error: str | None = None, raw: dict | None = None) -> None:
     ctx = await asyncio.to_thread(_resolve_context, to, payloads)
     await asyncio.to_thread(
         _write_log,
-        direction="out",
-        kind=kind,
-        to_number=to,
-        body=body,
+        direction="out", kind=kind, to_number=to, body=body,
         payload=payloads[0] if payloads else None,
         template_name=template_name,
-        wa_message_id=wa_message_id,
-        status="sent" if wa_message_id else "failed",
-        error=error,
-        raw=raw,
-        **ctx,
+        wa_message_id=message_id,
+        status="sent" if message_id else "failed",
+        error=error, raw=raw, **ctx,
     )
-
-
-async def _post(payload: dict, *, kind: str, body: str | None,
-                template_name: str | None = None,
-                payloads: list[str] | None = None) -> str:
-    """POST to /messages, log the outcome, return Meta's wa_message_id."""
-    _require_config()
-    to = payload["to"]
-
-    try:
-        resp = await get_client().post(_messages_url(), headers=_headers(), json=payload)
-    except httpx.HTTPError as exc:
-        await _log_outbound(to=to, kind=kind, body=body, wa_message_id=None,
-                            template_name=template_name, payloads=payloads,
-                            error=str(exc))
-        log.error("send to %s failed: %s", to, exc)
-        raise WhatsAppError(0, str(exc)) from exc
-
-    try:
-        data = resp.json()
-    except ValueError:
-        data = {"raw_text": resp.text}
-
-    if resp.status_code >= 300:
-        await _log_outbound(to=to, kind=kind, body=body, wa_message_id=None,
-                            template_name=template_name, payloads=payloads,
-                            error=str(data), raw=data)
-        raise WhatsAppError(resp.status_code, data)
-
-    wamid = (data.get("messages") or [{}])[0].get("id")
-    await _log_outbound(to=to, kind=kind, body=body, wa_message_id=wamid,
-                        template_name=template_name, payloads=payloads, raw=data)
-    log.info("sent %s to %s -> %s", kind, to, wamid)
-    return wamid
 
 
 # --------------------------------------------------------------------------
@@ -230,210 +228,111 @@ async def _post(payload: dict, *, kind: str, body: str | None,
 # --------------------------------------------------------------------------
 
 
-async def send_template(
-    to: str,
-    template: str,
-    lang: str,
-    body_vars: list[str] | None = None,
-    button_payloads: list[str] | None = None,
-) -> str:
-    """Send an approved UTILITY template. Returns Meta's wa_message_id.
+def render(template: str, lang: str, body_vars: list[str] | None) -> str:
+    """Render a named message from i18n/strings.py (invariant 12).
 
-    Every dose reminder goes through here (invariant 1). `button_payloads`
-    carries the dose id, e.g. "TAKEN:<dose_id>" / "LATER:<dose_id>"
-    (invariant 2), and maps positionally onto the template's quick-reply
-    buttons - index 0 is the first button defined in Business Manager.
+    Extra or missing values are tolerated - a slightly odd message beats an
+    exception in the middle of a dose reminder.
+    """
+    names = TEMPLATE_VARS.get(template, ())
+    values = list(body_vars or [])
+    kwargs = {name: (values[i] if i < len(values) else "")
+              for i, name in enumerate(names)}
+    return strings.t(template, lang, **kwargs).strip()
 
-    Meta allows at most three dynamic button payloads per template.
+
+async def send_template(to: str, template: str, lang: str,
+                        body_vars: list[str] | None = None,
+                        button_payloads: list[str] | None = None) -> str:
+    """Send one of the named messages, with its reply options.
+
+    `lang` here is the patient's language ("ur" / "en"), not a Meta template
+    language code - there is no approval queue any more.
     """
     to = normalise_number(to)
-    components: list[dict] = []
+    body = render(template, lang, body_vars)
 
-    if body_vars:
-        components.append({
-            "type": "body",
-            "parameters": [{"type": "text", "text": str(v)} for v in body_vars],
-        })
+    labels = TEMPLATE_BUTTONS.get(template, ())
+    if button_payloads and labels:
+        buttons = [
+            {"id": payload, "text": strings.button(label, lang)}
+            for payload, label in zip(button_payloads, labels)
+        ]
+        return await _call(
+            "/send/buttons",
+            {"to": to, "body": body, "buttons": buttons},
+            kind="template", body=body, template_name=template,
+            payloads=button_payloads,
+        )
 
-    for index, payload in enumerate(button_payloads or []):
-        if index > 2:
-            log.warning("template %s: dropping button payload %d (Meta allows 3)",
-                        template, index)
-            break
-        components.append({
-            "type": "button",
-            "sub_type": "quick_reply",
-            "index": index,
-            "parameters": [{"type": "payload", "payload": payload}],
-        })
-
-    message: dict[str, Any] = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": to,
-        "type": "template",
-        "template": {"name": template, "language": {"code": lang}},
-    }
-    if components:
-        message["template"]["components"] = components
-
-    return await _post(
-        message,
-        kind="template",
-        body=f"[{template}] " + " | ".join(str(v) for v in (body_vars or [])),
-        template_name=template,
+    return await _call(
+        "/send/text", {"to": to, "body": body},
+        kind="template", body=body, template_name=template,
         payloads=button_payloads,
     )
 
 
 async def send_text(to: str, body: str) -> str:
-    """Send free-form text.
-
-    Only delivers inside an open 24-hour customer service window (invariant 1);
-    outside it Meta accepts the call but the message never arrives.
-    """
+    """Send free-form text. No 24-hour window applies on this transport."""
     to = normalise_number(to)
-    return await _post(
-        {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": to,
-            "type": "text",
-            "text": {"preview_url": False, "body": body},
-        },
-        kind="text",
-        body=body,
-    )
+    return await _call("/send/text", {"to": to, "body": body},
+                       kind="text", body=body)
 
 
 async def send_buttons(to: str, body: str, buttons: list[tuple[str, str]]) -> str:
-    """Send an interactive reply-button message. `buttons` is [(id, title)].
+    """Send reply options. `buttons` is [(id, title)].
 
-    The id comes back as interactive.button_reply.id, so it carries the dose
-    payload exactly like a template quick reply does. Meta allows three
-    buttons and titles are capped at 20 characters.
+    The id comes back as the reply payload, so it carries the dose id exactly
+    as a real button tap would.
     """
     to = normalise_number(to)
-    return await _post(
-        {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": to,
-            "type": "interactive",
-            "interactive": {
-                "type": "button",
-                "body": {"text": body},
-                "action": {
-                    "buttons": [
-                        {"type": "reply", "reply": {"id": bid, "title": title[:20]}}
-                        for bid, title in buttons[:3]
-                    ]
-                },
-            },
-        },
-        kind="interactive",
-        body=body,
-        payloads=[bid for bid, _ in buttons],
+    payload = [{"id": bid, "text": title[:25]} for bid, title in buttons[:3]]
+    return await _call(
+        "/send/buttons", {"to": to, "body": body, "buttons": payload},
+        kind="interactive", body=body, payloads=[b for b, _ in buttons],
     )
 
 
 async def send_voice(to: str, storage_key_or_bytes: str | bytes) -> str:
     """Send a voice note.
 
-    Accepts raw OGG/Opus bytes (uploaded to Meta first), an https URL, or a
-    Meta media id. Audio must be **audio/ogg with the OPUS codec, mono** -
-    Meta rejects plain ogg, and anything else renders as a file attachment
-    that elderly users will not open (invariant 7).
-
-    A Supabase storage key is not resolved here: keeping storage out of this
-    module is what invariant 6 is for. voice/tts.py hands over bytes or a
-    signed URL.
+    Accepts raw OGG/Opus bytes or an https URL. The bridge sends it with
+    ptt=true, which is what makes WhatsApp render a play button instead of a
+    file attachment an elderly user will never tap (invariant 7).
     """
     to = normalise_number(to)
-    audio: dict[str, str]
 
     if isinstance(storage_key_or_bytes, (bytes, bytearray)):
-        media_id = await upload_media(bytes(storage_key_or_bytes), "audio/ogg")
-        audio = {"id": media_id}
+        audio_b64 = base64.b64encode(bytes(storage_key_or_bytes)).decode()
     elif storage_key_or_bytes.startswith(("http://", "https://")):
-        audio = {"link": storage_key_or_bytes}
-    elif storage_key_or_bytes.isdigit():
-        audio = {"id": storage_key_or_bytes}
+        resp = await get_client().get(storage_key_or_bytes)
+        if resp.status_code >= 300:
+            raise WhatsAppError(f"could not fetch audio: {resp.status_code}")
+        audio_b64 = base64.b64encode(resp.content).decode()
     else:
         raise ValueError(
-            "send_voice needs OGG/Opus bytes, an https URL, or a Meta media id. "
-            f"Got {storage_key_or_bytes!r} - resolve the storage key to a signed "
-            "URL or bytes in voice/tts.py first."
+            "send_voice needs OGG/Opus bytes or an https URL. Resolve the "
+            "storage key to bytes or a signed URL in voice/tts.py first."
         )
 
-    return await _post(
-        {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": to,
-            "type": "audio",
-            "audio": audio,
-        },
-        kind="audio",
-        body="[voice note]",
-    )
-
-
-async def upload_media(data: bytes, mime_type: str = "audio/ogg") -> str:
-    """Upload media to Meta and return its media id.
-
-    POST {base}/{PHONE_NUMBER_ID}/media, multipart/form-data, with fields
-    messaging_product=whatsapp, type, file. Media ids expire after 30 days.
-    """
-    _require_config()
-    url = f"{_base()}/{settings.whatsapp_phone_number_id}/media"
-    ext = "ogg" if "ogg" in mime_type else mime_type.split("/")[-1]
-
-    resp = await get_client().post(
-        url,
-        headers={"Authorization": f"Bearer {settings.whatsapp_token}"},
-        data={"messaging_product": "whatsapp", "type": mime_type},
-        files={"file": (f"voice.{ext}", data, mime_type)},
-    )
-    if resp.status_code >= 300:
-        raise WhatsAppError(resp.status_code, _safe_json(resp))
-
-    media_id = resp.json().get("id")
-    log.info("uploaded %d bytes of %s -> media %s", len(data), mime_type, media_id)
-    return media_id
+    return await _call("/send/audio", {"to": to, "audioBase64": audio_b64, "ptt": True},
+                       kind="audio", body="[voice note]")
 
 
 async def download_media(media_id: str) -> bytes:
-    """Download inbound media.
+    """Fetch inbound media.
 
-    Two steps (section 10). GET {base}/{media_id} returns a url that is valid
-    for five minutes, then that url must be fetched **with the Bearer token
-    attached** - Meta returns 401 for a plain fetch.
+    Rarely needed on this transport: the bridge already downloads audio and
+    images and hands them over base64-encoded in the webhook, so nothing has
+    to be fetched afterwards. Kept because it is part of the section 9
+    contract, and accepts a URL for anything that arrives by reference.
     """
-    _require_config()
-    client = get_client()
-    auth = {"Authorization": f"Bearer {settings.whatsapp_token}"}
-
-    meta_resp = await client.get(f"{_base()}/{media_id}", headers=auth)
-    if meta_resp.status_code >= 300:
-        raise WhatsAppError(meta_resp.status_code, _safe_json(meta_resp))
-
-    meta = meta_resp.json()
-    url = meta.get("url")
-    if not url:
-        raise WhatsAppError(meta_resp.status_code, f"no url in media response: {meta}")
-
-    binary = await client.get(url, headers=auth)
-    if binary.status_code >= 300:
-        raise WhatsAppError(binary.status_code, _safe_json(binary))
-
-    log.info("downloaded media %s (%s, %d bytes)",
-             media_id, meta.get("mime_type"), len(binary.content))
-    return binary.content
-
-
-def _safe_json(resp: httpx.Response) -> Any:
-    try:
-        return resp.json()
-    except ValueError:
-        return resp.text
+    if media_id.startswith(("http://", "https://")):
+        resp = await get_client().get(media_id)
+        if resp.status_code >= 300:
+            raise WhatsAppError(f"media download failed: {resp.status_code}")
+        return resp.content
+    raise WhatsAppError(
+        "the Baileys bridge delivers media inline as base64 - there is no id "
+        "to fetch later. Use InboundMessage.media_bytes."
+    )

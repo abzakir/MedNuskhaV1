@@ -36,32 +36,18 @@ router = APIRouter(tags=["whatsapp"])
 
 
 # --------------------------------------------------------------------------
-# GET /webhook - Meta's subscription handshake
+# GET /webhook - liveness only
 # --------------------------------------------------------------------------
 
 
 @router.get("/webhook", response_class=PlainTextResponse)
-async def verify_webhook(
-    hub_mode: str | None = Query(default=None, alias="hub.mode"),
-    hub_token: str | None = Query(default=None, alias="hub.verify_token"),
-    hub_challenge: str | None = Query(default=None, alias="hub.challenge"),
-):
-    """Echo hub.challenge back as PLAIN TEXT, not JSON (section 10).
+async def webhook_alive() -> PlainTextResponse:
+    """Confirms the endpoint is reachable.
 
-    Returning JSON here is the classic reason "Verify and save" fails in the
-    Meta dashboard even though the endpoint is reachable.
+    Meta needed a hub.challenge handshake here; the Baileys bridge does not.
+    Kept so a human can check the URL in a browser.
     """
-    if not settings.whatsapp_verify_token:
-        log.error("webhook verify attempted but WHATSAPP_VERIFY_TOKEN is not set")
-        return PlainTextResponse("verify token not configured", status_code=500)
-
-    if hub_mode == "subscribe" and hub_token == settings.whatsapp_verify_token:
-        log.info("webhook verified by Meta")
-        return PlainTextResponse(hub_challenge or "")
-
-    log.warning("webhook verification rejected (mode=%s, token matched=%s)",
-                hub_mode, hub_token == settings.whatsapp_verify_token)
-    return PlainTextResponse("forbidden", status_code=403)
+    return PlainTextResponse("mednuskha webhook ok")
 
 
 # --------------------------------------------------------------------------
@@ -70,12 +56,23 @@ async def verify_webhook(
 
 
 @router.post("/webhook")
-async def receive_webhook(request: Request, background: BackgroundTasks) -> Response:
-    """Accept an inbound webhook, enqueue it, return 200 immediately.
+@router.post("/webhook/{secret}")
+async def receive_webhook(request: Request, background: BackgroundTasks,
+                          secret: str | None = None) -> Response:
+    """Accept an inbound message, enqueue it, return 200 immediately.
 
-    Nothing is parsed here on purpose. Meta gives us a couple of seconds and
-    retries the whole batch if we miss it.
+    Nothing is parsed here on purpose (invariant 3): the bridge retries a
+    failed forward, and slow processing here would cost us messages.
+
+    The endpoint is public, so anyone who guesses the URL could post a fake
+    "patient took her medicine". WEBHOOK_SECRET is required in the path when
+    it is configured, which is what stops that.
     """
+    expected = settings.webhook_secret
+    if expected and secret != expected:
+        log.warning("webhook rejected: bad or missing secret in path")
+        return Response(status_code=403)
+
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001 - a malformed body is still a 200
@@ -139,7 +136,9 @@ def _process_message(msg: InboundMessage, raw_body: dict) -> dict | None:
             caretaker_id=caretaker.id if caretaker else None,
             dose_event_id=_dose_id_from(msg, session),
             from_number=number,
-            to_number=settings.whatsapp_phone_number_id or None,
+            # We are the recipient; the bridge's own number is a runtime
+            # fact, not configuration, and nothing downstream reads it.
+            to_number=None,
             body=msg.text,
             payload=msg.payload,
             media_id=msg.media_id,

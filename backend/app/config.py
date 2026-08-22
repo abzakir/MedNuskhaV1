@@ -27,17 +27,13 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # --- WhatsApp delivery (GREEN-API) ---
-    #: Green API replaced the Meta Cloud API on 2026-08-22 after the team could
-    #: not get a Meta Business account. The Meta client is preserved in git
-    #: history (commit 70263f4) if we ever go back. See PROJECT_LOG.md.
-    green_api_id_instance: str = ""
-    green_api_token_instance: str = ""
-    green_api_url: str = "https://api.green-api.com"
-    #: Green API recommends a separate host for file uploads.
-    green_api_media_url: str = "https://media.green-api.com"
-    #: Shared secret we append to the webhook path, since Green API has no
-    #: equivalent of Meta's hub.verify_token handshake.
+    # --- WhatsApp delivery (local Baileys bridge) ---
+    #: The Node process in whatsapp-bridge/ that owns the WhatsApp socket.
+    #: Replaced Green API on 2026-08-22: open source, unlimited contacts, and
+    #: no third party holding patients' messages. See PROJECT_LOG.md.
+    bridge_url: str = "http://127.0.0.1:3001"
+    #: Appended to the webhook path so only the bridge can post to us. Baileys
+    #: has no equivalent of Meta's hub.verify_token handshake.
     webhook_secret: str = ""
 
     # --- LLM (Groq now, Alibaba Model Studio when the credits land) ---
@@ -112,7 +108,9 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def whatsapp_configured(self) -> bool:
-        return bool(self.green_api_id_instance and self.green_api_token_instance)
+        # The bridge always has a URL; whether WhatsApp is actually connected
+        # is a runtime question, answered by client.bridge_status().
+        return bool(self.bridge_url)
 
     @staticmethod
     def _split(*values: str) -> list[str]:
@@ -143,15 +141,6 @@ class Settings(BaseSettings):
     def llm_key_count(self) -> int:
         return len(self.groq_keys) + len(self.dashscope_keys)
 
-    @property
-    def green_base(self) -> str:
-        return f"{self.green_api_url.rstrip('/')}/waInstance{self.green_api_id_instance}"
-
-    @property
-    def green_media_base(self) -> str:
-        return (f"{self.green_api_media_url.rstrip('/')}"
-                f"/waInstance{self.green_api_id_instance}")
-
     @computed_field  # type: ignore[prop-decorator]
     @property
     def database_configured(self) -> bool:
@@ -161,8 +150,7 @@ class Settings(BaseSettings):
         """Env vars that are empty and will block a real (non-health) request."""
         required = {
             "DATABASE_URL": self.database_url,
-            "GREEN_API_ID_INSTANCE": self.green_api_id_instance,
-            "GREEN_API_TOKEN_INSTANCE": self.green_api_token_instance,
+            "WEBHOOK_SECRET": self.webhook_secret,
             "GROQ_API_KEYS": ",".join(self.groq_keys),
         }
         return [name for name, value in required.items() if not value]

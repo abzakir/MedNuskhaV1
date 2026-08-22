@@ -2,74 +2,59 @@
 
 ## Current state
 
-**Phase 0 is complete and the gate passes.** Verified this session, not assumed:
+**WhatsApp works end to end, on a real phone.** Verified 2026-08-23 by sending
+four real messages to the linked number and watching them arrive.
 
-- `backend/.venv` built on **Python 3.14.4**; all of `requirements.txt` installed.
-- Backend boots. `GET /api/health` returns **200** with an honest body reporting
-  which env vars are missing.
-- Frontend `npm run build` compiles clean with types checked; `npm run dev`
-  serves on :3000.
-- Both run together, and the dashboard **successfully fetches the backend
-  across origins** (CORS confirmed working in a real browser, not just curl).
-- `pytest` runs green: 2 skipped, 0 failed.
+What runs right now:
 
-**What is real code:** `config.py`, `db.py`, `models.py` (all 11 tables),
-`main.py`, `frontend/lib/api.ts`, `frontend/app/page.tsx`.
+- **Baileys bridge** (`whatsapp-bridge/`, Node) holding the WhatsApp socket.
+  Linked number **923200268481**, state `connected`. Login persists in
+  `auth_info/` (gitignored) - scan once, never again.
+- **Backend** (FastAPI) sends through the bridge and receives replies on
+  `/webhook/<WEBHOOK_SECRET>`.
+- **Dose loop** (Phase 2) - 42/42 checks, unchanged by the transport swap.
+- **Database** - Supabase Postgres 17.6, 11 tables.
+- **LLM** - 3 Groq keys pooled and rotating, all verified live.
+  `qwen/qwen3.6-27b` returns clean JSON for intent classification.
+- **Voice out** - edge-tts `ur-PK-UzmaNeural` -> OGG/Opus mono, delivered as a
+  real playable voice note.
+- **Voice in** - Groq `whisper-large-v3` verified on Urdu; local
+  faster-whisper `small` is the offline fallback.
 
-**What is a stub:** every other backend module. Each has its frozen §9
-signature, a docstring explaining what it must do and which invariants apply,
-and a body that `raise NotImplementedError("Phase N — …")`. Nothing silently
-returns a wrong answer or `pass`es. The two test files skip at module level
-with the phase named, so `make test` is green rather than red-by-default — the
-adversarial case lists are already written out in them as data.
+**Proven by test, not assumed:** 42/42 dose loop, 16/16 inbound bridge path,
+17/17 key rotation, 4 live WhatsApp sends.
 
-**What is broken / not yet possible:**
+**What is still stubbed:** the whole agent (`interpret`, `respond`,
+`guardrails`, `knowledge`), the dashboard and its REST API, TTS
+pre-generation, ASR wiring, and both PDF reports. Phases 3 to 8.
 
-- **Database is LIVE.** Supabase Postgres 17.6, region ap-northeast-2 (Seoul),
-  reached over the **session pooler on port 5432**. All 11 tables created by
-  `init_db()` on first boot, both unique constraints present
-  (`uq_dose_event_idempotency_key`, `uq_message_log_wa_message_id`).
-  `/api/health` reports `"database": "connected"`.
-- **No WhatsApp — BLOCKED.** The team hit a problem creating the Meta
-  Developer / Business account. No app, no token, no templates submitted. The
-  exact error has not been captured yet. Phase 1 is written but cannot be
-  verified until this clears. See "Current phase".
-- **WeasyPrint installs but does not import on Windows** — needs the GTK
-  runtime. Blocks Phase 6 on a Windows dev machine. See Gotchas.
-- `make seed` exits 1 with a clear message; it lands in Phase 8.
+**Known gaps:**
+
+- **No buttons.** WhatsApp dropped interactive buttons for non-official
+  clients, so reply options are sent as numbered text. **This breaks invariant
+  2** - see the decisions log for the replacement rule, which Phase 3 must
+  implement.
+- WeasyPrint still cannot import on Windows (needs GTK). Blocks Phase 6 here,
+  fine on the Ubuntu ECS box.
 
 ## Current phase
 
-**Phases 1 and 2 are code-complete and verified. Only the real-phone step is
-outstanding, and it is blocked on Meta, not on us.**
-
-Phase 2 (the dose loop) passes 42/42 checks against the live database with the
-sender stubbed: materialisation idempotency, the taken path, the missed path
-(follow-up then caretaker alert), the late-reply reclassification, refusal of
-illegal transitions, no re-send across restarts, stale-dose suppression, a
-button tap driven through the real webhook, and "abhi nahi" correctly *not*
-acting as a snooze.
-
-**What is genuinely unverified:** that a message leaves Meta and lands on a
-phone. Everything up to the moment of transmission is proven.
+**Phases 1 and 2 are complete and verified on real hardware.** Phase 3 (the
+agent) is next and is fully unblocked - the Groq keys work.
 
 ## Next steps
 
-1. **Meta account** (blocked, team is on it). Capture the literal error text.
-   Do NOT register your own number as the sender - Meta issues a free test
-   number, and a number that already has WhatsApp can never be a sender.
-2. When the token lands, fill the four WHATSAPP_* values in `.env`, then:
-   `python scripts/send_test.py <number>` and tap a button. That closes the
-   Phase 1 gate. Then set a dose two minutes out and walk away to close
-   Phase 2's.
-3. Submit the four templates from §10 and **tell Claude which language code you
-   submitted under** - it goes in `WHATSAPP_TEMPLATE_LANG`, and a mismatch
-   fails silently.
-4. `DASHSCOPE_API_KEY` is still empty. Phase 3's `interpret` and `knowledge`
-   need it to run; `guardrails` and `i18n` do not and can be finished and
-   tested without it. **This is now the only other external blocker** — and it
-   is independent of Meta, so it can be done in parallel.
-5. Voice needs nothing from anyone: no account, no card, no key.
+1. **Phase 3 - the agent.** `interpret`, `respond`, `guardrails`, `knowledge`,
+   and `tests/test_guardrails.py` with 12+ adversarial cases. `i18n/strings.py`
+   is already written.
+2. **Implement the no-buttons reply rule** while doing it (see decisions log).
+   A typed "haan" must resolve to the right dose without asking a 68-year-old
+   "which one?" unless it genuinely cannot be determined.
+3. **Phase 4 - the dashboard.** Fully unblocked.
+4. Phase 5 voice wiring, Phase 6 reports, Phase 8 deploy.
+
+Nothing external is outstanding. No account, key or approval is being waited
+on.
 
 ## Environment / setup
 
@@ -210,6 +195,84 @@ Phase 8, where a CRLF Makefile breaks.
   agent asks one short clarifying question rather than guessing.
 
 ## Decisions log
+
+### 2026-08-23 — Session 5 (WhatsApp: Green API -> Baileys, and live)
+
+**Two provider changes in one day, both driven by the team.** Meta was blocked
+on account creation, so Green API went in and was verified authorized. The team
+then chose Baileys instead - free, open source, unlimited contacts, and no
+third party holding patients' messages, which is a materially better line for a
+health pitch than a hosted gateway.
+
+**Cost of the second switch was two files**, exactly as invariant 6 promised.
+`client.py` and `parser.py` changed; the ticker, state machine, database and
+webhook logic did not.
+
+**Architecture:** Baileys is Node-only and the backend is Python, so
+`whatsapp-bridge/` owns the socket and exposes `/send/text`, `/send/buttons`,
+`/send/audio` and `/status`, forwarding incoming messages to the backend. It is
+deliberately dumb - no business logic, no database.
+
+**Three things found by running it rather than trusting the docs:**
+
+- Baileys' README shows `import makeWASocket, {...}`, which is TypeScript with
+  esModuleInterop. In plain ESM the CJS default resolves to the module object,
+  giving "makeWASocket is not a function". The **named** export works.
+- npm's `latest` tag is **7.0.0-rc14**, a release candidate. Pinned to
+  **6.17.16**, the newest stable. Not demoing on an RC.
+- The first connection was rejected with **405** because Baileys announced a
+  stale WA Web version. It now calls `fetchLatestBaileysVersion()` at connect
+  time, which also stops this rotting next month.
+
+**Bugs caught by live testing:**
+
+- **A silent one that mattered:** a leftover `settings.whatsapp_phone_number_id`
+  in `webhook.py` threw inside the background task. The webhook still returned
+  **200** while every single reply was lost to a log line. That is precisely
+  the failure that looks like "WhatsApp is working".
+- The outbound path had the same foreign-key flaw already fixed inbound: a
+  button payload naming a non-existent dose failed the `message_log` insert, so
+  a message we really sent had no audit row. Both paths now verify the dose
+  exists before setting the link, and store the payload regardless.
+
+**INVARIANT 2 IS BROKEN, DELIBERATELY, AND NEEDS A REPLACEMENT IN PHASE 3.**
+
+WhatsApp removed interactive buttons for non-official clients. Mainline Baileys
+cannot send them; only a community fork or patch can, and those break whenever
+WhatsApp changes. The team chose to drop buttons rather than depend on one.
+
+Reply options are therefore sent as numbered text, and the dose id no longer
+travels back in a payload. Section 5.2 says never to infer the dose from
+timing. The replacement rule Phase 3 must implement:
+
+1. Match the reply to the patient's dose in `AWAITING_REPLY` or
+   `REMINDED_AGAIN`, or one `MISSED` within the escalation window.
+2. If **exactly one** is open, it is unambiguous - apply it.
+3. If **more than one** is open, match on the medicine name in the reply
+   ("Panadol le li"), which is why the reminder always names the medicine.
+4. Only if that still fails, ask one short question naming the options.
+
+This is not "inferring from timing" - it is resolving against the set of doses
+actually awaiting an answer, and refusing to guess when that set is ambiguous.
+
+**Other decisions:**
+
+- **Copy moved into `i18n/strings.py`** and is rendered locally. There are no
+  server-side templates on this transport. Strictly better: the wording is
+  version-controlled, reviewable in a diff, and changeable in a commit rather
+  than an approval queue.
+- **Each person is addressed in their own language** now. Under Meta a single
+  template-language code applied to everyone; rendering locally means the
+  patient gets `patient.language` and the caretaker gets `caretaker.language`.
+- **`WEBHOOK_SECRET` is required in the webhook path.** The endpoint is public
+  and Baileys has no equivalent of Meta's verify handshake, so without it
+  anyone who guessed the URL could post a fake "she took her medicine".
+- **`auth_info/` is gitignored in two places.** It is real WhatsApp login
+  credentials; anyone holding that folder can read the account's messages.
+
+**Before touching this area next:** the bridge must be running for any send to
+work (`make bridge` / `.\bridge.ps1`). `client.bridge_status()` reports the
+live connection state and `/api/health` surfaces it.
 
 ### 2026-08-22 — Session 4 (TTS stack swap)
 

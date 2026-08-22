@@ -203,7 +203,8 @@ def _context(session, dose: DoseEvent) -> dict | None:
         "medicine_label": label,
         "food_note": note,
         "caretakers": [{"id": c.id, "name": c.name, "phone": c.phone,
-                        "relation": c.relation} for c in caretakers],
+                        "relation": c.relation, "language": c.language}
+                       for c in caretakers],
     }
 
 
@@ -240,7 +241,7 @@ async def send_reminder(dose_id: str) -> bool:
         await wa.send_template(
             to=ctx["patient_number"],
             template="dose_reminder",
-            lang=settings.whatsapp_template_lang,
+            lang=ctx["patient_language"],
             body_vars=[
                 _clean_var(ctx["patient_name"], "Ji"),
                 _clean_var(local_hour_label(dose.scheduled_at), "abhi"),
@@ -271,7 +272,7 @@ async def send_followup(dose_id: str) -> bool:
         await wa.send_template(
             to=ctx["patient_number"],
             template="dose_followup",
-            lang=settings.whatsapp_template_lang,
+            lang=ctx["patient_language"],
             body_vars=[
                 _clean_var(ctx["patient_name"], "Ji"),
                 _clean_var(ctx["medicine_label"], "dawai"),
@@ -305,7 +306,7 @@ async def escalate(dose_id: str) -> bool:
             await wa.send_template(
                 to=caretaker["phone"],
                 template="caretaker_alert",
-                lang=settings.whatsapp_template_lang,
+                lang=caretaker.get("language", "ur"),
                 body_vars=[
                     _clean_var(ctx["patient_name"], "Patient"),
                     _clean_var(local_hour_label(dose.scheduled_at), "aaj"),
