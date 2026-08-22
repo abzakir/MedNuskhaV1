@@ -25,48 +25,53 @@ adversarial case lists are already written out in them as data.
 
 **What is broken / not yet possible:**
 
-- **No database.** `DATABASE_URL` is empty, so no Supabase project exists yet
-  and no table has actually been created. `init_db()` is wired and will run on
-  the next boot once the URL is set. Health reports `"database": "not connected"`.
-- **No WhatsApp.** No Meta app, no token, no templates submitted.
+- **Database is LIVE.** Supabase Postgres 17.6, region ap-northeast-2 (Seoul),
+  reached over the **session pooler on port 5432**. All 11 tables created by
+  `init_db()` on first boot, both unique constraints present
+  (`uq_dose_event_idempotency_key`, `uq_message_log_wa_message_id`).
+  `/api/health` reports `"database": "connected"`.
+- **No WhatsApp — BLOCKED.** The team hit a problem creating the Meta
+  Developer / Business account. No app, no token, no templates submitted. The
+  exact error has not been captured yet. Phase 1 is written but cannot be
+  verified until this clears. See "Current phase".
 - **WeasyPrint installs but does not import on Windows** — needs the GTK
   runtime. Blocks Phase 6 on a Windows dev machine. See Gotchas.
 - `make seed` exits 1 with a clear message; it lands in Phase 8.
 
 ## Current phase
 
-**Phase 0 — Bootstrap: done.** Nothing remains on Claude's side.
+**Phase 0 done. Phase 1 (WhatsApp transport) started, then paused on a blocker.**
 
-The blocker is now entirely on the human side, and it is time-sensitive:
-**the four WhatsApp templates must be submitted today.** Approval takes hours
-and sometimes a day, and Phase 1 cannot be verified without `dose_reminder`.
+Meta's current Cloud API reference was fetched and the field shapes confirmed
+(see Gotchas) before any client code was written, per §14 Phase 1. Writing then
+paused: the team reported a **problem with their Meta account**, so there is no
+token to build against and no way to verify the gate.
+
+The team chose to **retry Meta with the free test number** rather than switch
+provider, and asked Claude to wait rather than build ahead. Alternatives were
+evaluated and are recorded in the decisions log in case Meta stays blocked.
 
 ## Next steps
 
-Ordered. Steps 1–3 are the humans' Phase 0 "Your turn"; they gate everything.
+1. **Capture the exact Meta error text.** Not a summary — the literal message.
+   The three common failures have completely different fixes and are
+   indistinguishable from a paraphrase.
+2. **Do not try to register your own phone number as the sender.** Meta issues
+   a free test number automatically when the WhatsApp product is added. A
+   number that already has WhatsApp on it can never be registered as a sender.
+   This is the single most common self-inflicted block.
+3. Business verification is **not** required to use the test number. If Meta
+   prompts for it, skip and continue.
+4. Once the app exists: capture `WHATSAPP_PHONE_NUMBER_ID` and
+   `WHATSAPP_WABA_ID`, whitelist the team's numbers (the spare number goes here
+   as a *recipient*), and create the permanent System User token.
+5. Submit the four templates from §10.
+6. Then resume Phase 1 — the client, parser and webhook are designed and the
+   API shapes verified; only the writing is left.
 
-1. **Submit the four WhatsApp templates first — before anything else.**
-   Meta Developer app → Business → add the WhatsApp product. In
-   WhatsApp Manager → Message Templates, submit all four from AGENTS.md §10
-   (`dose_reminder`, `dose_followup`, `caretaker_alert`, `patient_optin`), all
-   category UTILITY. Nothing else today matters more.
-2. Still in the Meta app: save `WHATSAPP_PHONE_NUMBER_ID` and
-   `WHATSAPP_WABA_ID`. In WhatsApp → API Setup, whitelist three team numbers on
-   the free test number and enter each confirmation code.
-3. Meta Business Settings → create a **System User**, assign the WABA asset,
-   generate a **permanent token** with `whatsapp_business_messaging` and
-   `whatsapp_business_management`. Save as `WHATSAPP_TOKEN` (this replaces the
-   24-hour temp token). Invent a random string for `WHATSAPP_VERIFY_TOKEN`.
-4. Create the Supabase project (free tier). Copy `DATABASE_URL`, `SUPABASE_URL`,
-   `SUPABASE_ANON_KEY`. Create a **private** `voice-notes` storage bucket.
-5. Create a DashScope account (dashscope.aliyun.com), redeem the hackathon
-   credit code, save `DASHSCOPE_API_KEY`.
-6. `cp .env.example .env` and fill it in.
-7. Run `.\dev.ps1`, open http://localhost:3000, and confirm the card now reads
-   **database: connected**. That is the proof the schema actually created — the
-   11 tables appear in Supabase on that first boot.
-8. Then start Phase 1 (WhatsApp transport) with the master prompt from §0 plus
-   the Phase 1 prompt from §14.
+**If Meta cannot be unblocked:** the fallback analysis is in the decisions log.
+Twilio's WhatsApp Sandbox needs no Meta account at all and removes the template
+wait, at the cost of tap buttons and a Twilio-branded US number.
 
 ## Environment / setup
 
@@ -135,7 +140,83 @@ Phase 8, where a CRLF Makefile breaks.
   `postgresql+psycopg://`. Always use `settings.sqlalchemy_url`, never
   `settings.database_url`, to build an engine.
 
+- **Meta Cloud API shapes, verified from Meta's own docs on 2026-08-22** (do
+  not re-derive these from memory):
+  - Send: `POST https://graph.facebook.com/{version}/{PHONE_NUMBER_ID}/messages`
+    with `Authorization: Bearer` + `Content-Type: application/json`.
+  - Template body: `{"messaging_product":"whatsapp","to":"...","type":"template",
+    "template":{"name":..., "language":{"code":...}, "components":[...]}}`.
+  - Quick-reply button component:
+    `{"type":"button","sub_type":"quick_reply","index":0,
+      "parameters":[{"type":"payload","payload":"TAKEN:<dose_id>"}]}`.
+    Max 3 dynamic button payloads per template.
+  - Send response: `messages[0].id` is the `wamid...` we store as
+    `wa_message_id`.
+  - **Media download is two steps and the URL expires in 5 minutes:**
+    `GET /{version}/{MEDIA_ID}` returns `url`, `mime_type`, `sha256`,
+    `file_size`, `id`; then GET that url **with the Bearer token attached** —
+    omitting it fails.
+  - Media upload: `POST /{version}/{PHONE_NUMBER_ID}/media`, multipart, fields
+    `messaging_product=whatsapp`, `type`, `file`. Returns `{"id": ...}`, and
+    media ids expire after 30 days.
+  - Audio must be **audio/ogg with OPUS codec, mono** — plain ogg is rejected.
+    16 MB cap. This matches invariant 7 exactly.
+- **The current Graph API version is v26.0** (released 2026-07-29). AGENTS.md
+  §13 pins `WHATSAPP_API_VERSION=v23.0` (2025-05-29), which is still supported
+  and was left as the default — it is an env var, so changing it is a one-line
+  edit, not a code change. Flagged rather than silently bumped.
+- **You do not need your own phone number to send.** Meta issues a free test
+  number when the WhatsApp product is added; your own numbers are only ever
+  *recipients* on the 5-number whitelist. Trying to register a number that
+  already has WhatsApp on it as the sender always fails.
+
 ## Decisions log
+
+### 2026-08-22 — Session 2 (Phase 1, paused)
+
+**Done:** Supabase connected and verified (Postgres 17.6, Seoul, session
+pooler). `init_db()` created all 11 tables and both unique constraints —
+confirmed by querying `information_schema`, not assumed. Meta's Cloud API
+reference fetched and the exact request/webhook/media shapes recorded in
+Gotchas before writing any client code, per §14 Phase 1.
+
+**Blocker:** the team hit a problem creating the Meta Developer/Business
+account. Exact error not yet captured. Phase 1 paused rather than written
+blind — there is no token to test against.
+
+**Provider alternatives evaluated** (in case Meta stays blocked):
+
+- **Twilio WhatsApp Sandbox** — Twilio's docs state no WhatsApp Business
+  Account or registered sender is needed, so it bypasses Meta entirely. Also
+  removes the template-approval wait: a participant sends `join <code>`, which
+  opens a 24-hour free-form window, and the demo script keeps that window open
+  because the patient keeps replying. Costs: shared Twilio-branded US number,
+  participants re-join every 3 days, adds the `twilio` package, and **no tap
+  buttons** without going through Content Template approval.
+- **whatsapp-web.js / Baileys on the spare number** — no approvals, no
+  whitelist, no window, native voice notes. But it violates WhatsApp's terms,
+  the number can be banned, it needs a Node sidecar beside the Python backend,
+  and it has no buttons either.
+- **Telegram** — trivially easy, but WhatsApp is the product thesis (§3.1).
+  Emergency only.
+
+**Decision:** retry Meta with the free test number. Chosen by the team over
+switching provider, since Meta direct is the only option that keeps tap buttons
+and therefore invariant 2 intact.
+
+**The invariant at stake if we ever switch:** both fallbacks lose tap buttons,
+which breaks **invariant 2** (the dose id travels in the button payload; never
+infer the dose from timing). Any switch must carry a written exception: match a
+reply to the patient's single dose in `AWAITING_REPLY`/`REMINDED_AGAIN`, and
+ask which one when two are open. Do not let that slip in silently.
+
+**Cost of switching is low by design:** invariant 6 confines every outbound
+call to `whatsapp/client.py`, so a provider change is one module, not a
+rewrite. That was worth the discipline.
+
+**Before touching this area next:** the API shapes in Gotchas were fetched from
+Meta on 2026-08-22 — reuse them rather than re-fetching, but do re-verify if
+more than a few days pass.
 
 ### 2026-08-22 — Session 1 (Phase 0)
 
