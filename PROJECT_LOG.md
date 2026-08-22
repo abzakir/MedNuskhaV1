@@ -65,9 +65,7 @@ Ordered. Steps 1–3 are the humans' Phase 0 "Your turn"; they gate everything.
 7. Run `.\dev.ps1`, open http://localhost:3000, and confirm the card now reads
    **database: connected**. That is the proof the schema actually created — the
    11 tables appear in Supabase on that first boot.
-8. `git init` has been run and `.gitignore` is in place, but **nothing has been
-   committed yet** and there is no remote. Create the GitHub repo, commit, push.
-9. Then start Phase 1 (WhatsApp transport) with the master prompt from §0 plus
+8. Then start Phase 1 (WhatsApp transport) with the master prompt from §0 plus
    the Phase 1 prompt from §14.
 
 ## Environment / setup
@@ -94,6 +92,13 @@ Backend on :8000 (health at `/api/health`), frontend on :3000.
 
 **Accounts still to create:** Meta Developer + WABA, Supabase, DashScope,
 Google Cloud (TTS — not needed until Phase 5).
+
+**Git / GitHub:** remote is `https://github.com/abzakir/MedNuskha`, branch
+`main`. Phase 0 is pushed (`a163ac9`). **Standing instruction from the team:
+commit and push at the end of every phase** — one commit per phase, message in
+the `feat(scope): ...` form from §12. `.gitattributes` normalises the repo to
+LF (with `.ps1` kept CRLF) because the backend ships to an Ubuntu ECS box in
+Phase 8, where a CRLF Makefile breaks.
 
 **WhatsApp templates:** none submitted yet. All four are pending action.
 
