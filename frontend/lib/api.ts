@@ -1,10 +1,11 @@
 /**
  * The single place the dashboard talks to the FastAPI backend.
  *
- * Base URL comes from NEXT_PUBLIC_API_BASE (AGENTS.md section 13). In local
- * dev it is unset and falls back to the port `make dev` uses; on Vercel it is
- * set to the deployed backend's HTTPS URL (Phase 8).
+ * Every request carries the Supabase access token, so the backend can map it
+ * to a caretaker and enforce that they only ever see their own family.
  */
+
+import { getSession } from "./supabase";
 
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") ?? "http://localhost:8000";
@@ -19,28 +20,241 @@ export class ApiError extends Error {
   }
 }
 
-/** Fetch JSON from the backend. Throws ApiError on a non-2xx response. */
-export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
-    cache: "no-store",
-  });
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const session = await getSession();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((init?.headers as Record<string, string>) ?? {}),
+  };
+  if (session?.access_token) {
+    headers.Authorization = `Bearer ${session.access_token}`;
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, { ...init, headers, cache: "no-store" });
+  } catch {
+    throw new ApiError(
+      `Can't reach the server at ${API_BASE}. Is the backend running?`,
+      0,
+    );
+  }
 
   if (!res.ok) {
-    throw new ApiError(`${init?.method ?? "GET"} ${path} failed`, res.status);
+    // FastAPI puts the useful part in `detail`; validation errors nest it.
+    let message = `Request failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (typeof body.detail === "string") message = body.detail;
+      else if (Array.isArray(body.detail) && body.detail[0]?.msg)
+        message = body.detail[0].msg.replace(/^Value error, /, "");
+    } catch {
+      /* keep the default */
+    }
+    throw new ApiError(message, res.status);
   }
+
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
-export type Health = {
-  status: string;
-  service: string;
-  version: string;
-  timezone: string;
-  database: string;
-  whatsapp: string;
-  missing_env: string[];
+const get = <T>(path: string) => request<T>(path);
+const post = <T>(path: string, body?: unknown) =>
+  request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined });
+const patch = <T>(path: string, body: unknown) =>
+  request<T>(path, { method: "PATCH", body: JSON.stringify(body) });
+const del = <T>(path: string) => request<T>(path, { method: "DELETE" });
+
+// ---------------------------------------------------------------- types
+
+export type DoseState =
+  | "SCHEDULED"
+  | "SENT"
+  | "AWAITING_REPLY"
+  | "REMINDED_AGAIN"
+  | "TAKEN"
+  | "TAKEN_LATE"
+  | "MISSED"
+  | "SKIPPED";
+
+export type Adherence = {
+  taken: number;
+  on_time: number;
+  late: number;
+  missed: number;
+  skipped: number;
+  pending: number;
+  decided: number;
+  percent: number | null;
+  days: number;
 };
 
-export const getHealth = () => api<Health>("/api/health");
+export type Me = {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  relation: string;
+  language: string;
+  family: { id: string | null; name: string | null };
+  patient_count: number;
+  needs_phone: boolean;
+};
+
+export type PatientSummary = {
+  id: string;
+  name: string;
+  whatsapp_number: string;
+  language: string;
+  opted_in: boolean;
+  stopped: boolean;
+  medicine_count: number;
+  today: { total: number; taken: number; missed: number; pending: number };
+  adherence: Adherence;
+};
+
+export type MedicineDetail = {
+  id: string;
+  name: string;
+  strength: string | null;
+  form: string | null;
+  active: boolean;
+  schedule: {
+    dose_times: string[];
+    duration_days: number | null;
+    start_date: string | null;
+    end_date: string | null;
+    days_remaining: number | null;
+    finished: boolean;
+  } | null;
+  info: {
+    purpose_ur: string | null;
+    purpose_en: string | null;
+    food_rule: string | null;
+    confirmed: boolean;
+  } | null;
+  adherence: Adherence;
+};
+
+export type PatientDetail = {
+  id: string;
+  name: string;
+  whatsapp_number: string;
+  language: string;
+  opted_in: boolean;
+  stopped: boolean;
+  medicines: MedicineDetail[];
+  adherence: Adherence;
+};
+
+export type Dose = {
+  id: string;
+  medicine_id: string;
+  medicine: string;
+  state: DoseState;
+  scheduled_at: string;
+  time: string;
+  sent_at: string | null;
+  responded_at: string | null;
+  response_source: string | null;
+  response_text: string | null;
+  reason: string | null;
+  caretaker_alerted: boolean;
+};
+
+export type Today = {
+  patient_id: string;
+  date: string;
+  server_time: string;
+  doses: Dose[];
+  summary: { total: number; taken: number; missed: number; pending: number };
+};
+
+export type EventRow = {
+  kind: "message" | "symptom";
+  at: string;
+  direction?: "in" | "out";
+  type?: string;
+  body: string | null;
+  template?: string | null;
+  status?: string | null;
+  error?: string | null;
+  severity?: string;
+};
+
+export type MedicineDraft = {
+  source: "existing" | "ai_fetched";
+  already_confirmed: boolean;
+  recognised?: boolean;
+  canonical_name: string;
+  purpose_ur: string | null;
+  purpose_en: string | null;
+  food_rule: string | null;
+  common_timing: string | null;
+  aliases: string[];
+  confirmed: boolean;
+};
+
+export type WhatsAppStatus = {
+  state: string;
+  me?: string | null;
+  qr?: string | null;
+  error?: string;
+};
+
+// ------------------------------------------------------------- endpoints
+
+export const api = {
+  me: () => get<Me>("/api/me"),
+  updateMe: (body: Partial<Pick<Me, "name" | "phone" | "relation" | "language">>) =>
+    patch<Me>("/api/me", body),
+
+  patients: () => get<PatientSummary[]>("/api/patients"),
+  patient: (id: string) => get<PatientDetail>(`/api/patients/${id}`),
+  today: (id: string) => get<Today>(`/api/patients/${id}/today`),
+  events: (id: string) => get<EventRow[]>(`/api/patients/${id}/events`),
+
+  addPatient: (body: {
+    name: string;
+    whatsapp_number: string;
+    language: string;
+    relation: string;
+  }) => post<{ id: string }>("/api/patients", body),
+
+  sendOptin: (id: string) => post<{ sent: boolean }>(`/api/patients/${id}/optin`),
+
+  lookupMedicine: (name: string) =>
+    post<MedicineDraft>("/api/medicines/lookup", { name }),
+
+  addMedicine: (body: {
+    patient_id: string;
+    name: string;
+    strength?: string;
+    form?: string;
+    dose_times: string[];
+    duration_days: number;
+    purpose_ur?: string;
+    purpose_en?: string;
+    food_rule?: string;
+    common_timing?: string;
+    edited: boolean;
+  }) => post<{ id: string }>("/api/medicines", body),
+
+  stopMedicine: (id: string) => del<{ stopped: boolean }>(`/api/medicines/${id}`),
+
+  whatsappStatus: () => get<WhatsAppStatus>("/api/whatsapp/status"),
+};
+
+// ------------------------------------------------------------- presentation
+
+/** How each dose state should read and look on the dashboard. */
+export const DOSE_LABELS: Record<DoseState, { label: string; tone: string }> = {
+  SCHEDULED: { label: "Scheduled", tone: "muted" },
+  SENT: { label: "Sent", tone: "info" },
+  AWAITING_REPLY: { label: "Waiting for reply", tone: "info" },
+  REMINDED_AGAIN: { label: "Reminded again", tone: "warn" },
+  TAKEN: { label: "Taken", tone: "good" },
+  TAKEN_LATE: { label: "Taken late", tone: "good-muted" },
+  MISSED: { label: "Missed", tone: "bad" },
+  SKIPPED: { label: "Skipped", tone: "muted" },
+};
