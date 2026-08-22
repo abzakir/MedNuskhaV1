@@ -115,13 +115,26 @@ class Caretaker(SQLModel, table=True):
     id: str = Field(default_factory=new_id, primary_key=True)
     family_id: str = Field(foreign_key="family.id", index=True)
     name: str
-    phone: str = Field(
+    #: Nullable since 2026-08-23: a caretaker now registers with an email and
+    #: supplies their WhatsApp number afterwards, so the row exists before the
+    #: number does. Still unique when present - Postgres allows many NULLs
+    #: under a unique index.
+    phone: str | None = Field(
+        default=None,
         index=True,
         unique=True,
         description="digits only, no + and no leading zero, e.g. 923001234567",
     )
     relation: str = Field(default="caregiver")
     language: str = Field(default="ur", description="one of LANGUAGES")
+
+    #: Added 2026-08-23. Section 4.1 assumed phone + OTP; the product now signs
+    #: caretakers in with email or Google through Supabase Auth, so we need
+    #: somewhere to put the identity. Both nullable, so existing rows and the
+    #: dev bypass keep working. See PROJECT_LOG.md.
+    email: str | None = Field(default=None, index=True)
+    #: Supabase Auth user id (the `sub` claim). Unique per account.
+    auth_user_id: str | None = Field(default=None, index=True)
 
     # phone + OTP signup (section 4.1); a dev bypass is acceptable.
     otp_code: str | None = Field(default=None)

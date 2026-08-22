@@ -1,20 +1,667 @@
 """REST API for the Next.js dashboard.
 
-Built in Phase 4. Endpoints the dashboard needs:
-  GET  /api/families/{id}                    family overview
-  GET  /api/patients/{id}                    patient detail
-  GET  /api/patients/{id}/today              today's doses (polled every 5s)
-  POST /api/patients                         add a patient
-  POST /api/medicines/lookup                 knowledge.fetch_draft -> draft
-  POST /api/medicines                        save_confirmed + medicine + schedule
-  GET  /api/patients/{id}/report.pdf         Phase 6
-  POST /api/patients/{id}/prescriptions      Phase 7
+Auth is Supabase: the browser signs in with email/password or Google, and
+sends the resulting JWT as a Bearer token. This module verifies it against
+Supabase's JWKS and maps the account to a `caretaker` row, creating one on
+first sign-in.
 
-GET /api/health lives in main.py.
+A caretaker only ever sees their own family's data. Every patient-scoped
+endpoint goes through `_owned_patient`, which is the single place that check
+lives - so it cannot be forgotten on a new endpoint.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+import logging
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
+
+import httpx
+import jwt
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field, field_validator
+from sqlmodel import Session, col, func, select
+
+from app.agent import knowledge
+from app.config import settings
+from app.db import get_session
+from app.models import (Caretaker, DoseEvent, Family, Medicine,
+                        MedicineReference, MessageLog, Patient, Schedule,
+                        SymptomReport)
+from app.whatsapp.client import normalise_number
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
+
+_jwks_client: jwt.PyJWKClient | None = None
+
+
+# ==========================================================================
+# auth
+# ==========================================================================
+
+
+def _jwks() -> jwt.PyJWKClient:
+    global _jwks_client
+    if _jwks_client is None:
+        url = f"{settings.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
+        _jwks_client = jwt.PyJWKClient(url, cache_keys=True)
+    return _jwks_client
+
+
+def _decode(token: str) -> dict:
+    """Verify a Supabase access token and return its claims.
+
+    Supabase signs with asymmetric keys these days, so the public JWKS is
+    enough - no shared secret has to live in our env.
+    """
+    try:
+        key = _jwks().get_signing_key_from_jwt(token).key
+        return jwt.decode(token, key, algorithms=["ES256", "RS256"],
+                          audience="authenticated",
+                          options={"verify_exp": True})
+    except Exception as exc:  # noqa: BLE001
+        log.info("token rejected: %s", exc)
+        raise HTTPException(401, "invalid or expired session") from exc
+
+
+def _find_or_create(session: Session, *, auth_id: str, email: str | None,
+                    name: str | None) -> Caretaker:
+    """Map a Supabase account to a caretaker row, creating it on first login.
+
+    A new caretaker gets their own family. Joining an existing family is a
+    later concern; §4.10's "multiple caretakers per patient" is served by
+    inviting someone into a family, not by guessing at sign-up.
+    """
+    row = session.exec(
+        select(Caretaker).where(Caretaker.auth_user_id == auth_id)).first()
+    if row:
+        return row
+
+    if email:
+        row = session.exec(select(Caretaker).where(Caretaker.email == email)).first()
+        if row:
+            row.auth_user_id = auth_id
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row
+
+    display = (name or (email or "").split("@")[0] or "Caretaker").strip()
+    family = Family(name=f"{display}'s family")
+    session.add(family)
+    session.commit()
+    session.refresh(family)
+
+    row = Caretaker(family_id=family.id, name=display, email=email,
+                    auth_user_id=auth_id, verified=True)
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    log.info("new caretaker %s (%s) with family %s", row.id, email, family.id)
+    return row
+
+
+def current_caretaker(request: Request,
+                      session: Session = Depends(get_session)) -> Caretaker:
+    """The signed-in caretaker. 401 if there is no valid session."""
+    header = request.headers.get("authorization", "")
+
+    if header.lower().startswith("bearer "):
+        claims = _decode(header.split(" ", 1)[1])
+        return _find_or_create(
+            session,
+            auth_id=claims["sub"],
+            email=claims.get("email"),
+            name=(claims.get("user_metadata") or {}).get("full_name"),
+        )
+
+    # Dev bypass (§4.1). Off unless explicitly enabled, and it says so loudly.
+    if settings.dev_auth_bypass:
+        log.warning("DEV AUTH BYPASS in use - never enable this in production")
+        return _find_or_create(session, auth_id="dev-bypass-user",
+                               email="dev@mednuskha.local", name="Dev Caretaker")
+
+    raise HTTPException(401, "sign in required")
+
+
+def _owned_patient(patient_id: str, caretaker: Caretaker,
+                   session: Session) -> Patient:
+    """Fetch a patient, or 404 if they are not in the caretaker's family.
+
+    404 rather than 403 on purpose: a caretaker should not be able to learn
+    that a given patient id exists at all.
+    """
+    patient = session.get(Patient, patient_id)
+    if patient is None or patient.family_id != caretaker.family_id:
+        raise HTTPException(404, "patient not found")
+    return patient
+
+
+# ==========================================================================
+# request bodies
+# ==========================================================================
+
+
+class ProfileIn(BaseModel):
+    name: str | None = None
+    phone: str | None = None
+    relation: str | None = None
+    language: str | None = None
+
+
+class PatientIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    whatsapp_number: str
+    language: str = "ur"
+    relation: str = Field(default="beta", max_length=40)
+
+    @field_validator("whatsapp_number")
+    @classmethod
+    def _digits(cls, v: str) -> str:
+        cleaned = normalise_number(v)
+        if len(cleaned) < 10:
+            raise ValueError("that does not look like a WhatsApp number")
+        return cleaned
+
+    @field_validator("language")
+    @classmethod
+    def _lang(cls, v: str) -> str:
+        return v if v in ("ur", "en") else "ur"
+
+
+class LookupIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class MedicineIn(BaseModel):
+    patient_id: str
+    name: str = Field(min_length=1, max_length=120)
+    strength: str | None = None
+    form: str | None = None
+
+    #: Local "HH:MM" times, e.g. ["08:00", "20:00"].
+    dose_times: list[str] = Field(min_length=1, max_length=6)
+    duration_days: int = Field(ge=1, le=365)
+
+    # The caretaker-reviewed draft. Saved to medicine_reference as CONFIRMED,
+    # which is the only way a row ever becomes confirmed (invariant 9).
+    purpose_ur: str | None = None
+    purpose_en: str | None = None
+    food_rule: str | None = None
+    common_timing: str | None = None
+    edited: bool = False
+
+    @field_validator("dose_times")
+    @classmethod
+    def _times(cls, v: list[str]) -> list[str]:
+        out = []
+        for raw in v:
+            try:
+                hh, mm = raw.strip().split(":")
+                h, m = int(hh), int(mm)
+                assert 0 <= h < 24 and 0 <= m < 60
+            except Exception as exc:
+                raise ValueError(f"bad dose time {raw!r}, expected HH:MM") from exc
+            out.append(f"{h:02d}:{m:02d}")
+        return sorted(set(out))
+
+
+# ==========================================================================
+# helpers
+# ==========================================================================
+
+
+def _local(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(settings.tz)
+
+
+def _today_bounds() -> tuple[datetime, datetime]:
+    now_local = datetime.now(settings.tz)
+    start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.astimezone(timezone.utc), (start + timedelta(days=1)).astimezone(timezone.utc)
+
+
+TAKEN_STATES = ("TAKEN", "TAKEN_LATE")
+DECIDED_STATES = ("TAKEN", "TAKEN_LATE", "MISSED", "SKIPPED")
+
+
+def _adherence(session: Session, patient_id: str, *, days: int = 14,
+               medicine_id: str | None = None) -> dict:
+    """Percentage of decided doses that were actually taken.
+
+    Doses still awaiting an answer are excluded - counting a dose that is due
+    in four hours as "missed" would make every patient look terrible in the
+    morning.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    query = (select(DoseEvent.state, func.count())
+             .where(DoseEvent.patient_id == patient_id)
+             .where(DoseEvent.scheduled_at >= since)
+             .group_by(DoseEvent.state))
+    if medicine_id:
+        query = (query.join(Schedule, Schedule.id == DoseEvent.schedule_id)
+                 .where(Schedule.medicine_id == medicine_id))
+
+    counts = {state: n for state, n in session.exec(query).all()}
+    taken = sum(counts.get(s, 0) for s in TAKEN_STATES)
+    decided = sum(counts.get(s, 0) for s in DECIDED_STATES)
+    return {
+        "taken": taken,
+        "on_time": counts.get("TAKEN", 0),
+        "late": counts.get("TAKEN_LATE", 0),
+        "missed": counts.get("MISSED", 0),
+        "skipped": counts.get("SKIPPED", 0),
+        "pending": sum(counts.get(s, 0)
+                       for s in ("SCHEDULED", "SENT", "AWAITING_REPLY",
+                                 "REMINDED_AGAIN")),
+        "decided": decided,
+        "percent": round(taken / decided * 100) if decided else None,
+        "days": days,
+    }
+
+
+def _dose_json(dose: DoseEvent, medicine: Medicine) -> dict:
+    label = f"{medicine.name} {medicine.strength}".strip() if medicine.strength \
+        else medicine.name
+    return {
+        "id": dose.id,
+        "medicine_id": medicine.id,
+        "medicine": label,
+        "state": dose.state,
+        "scheduled_at": _local(dose.scheduled_at).isoformat(),
+        "time": _local(dose.scheduled_at).strftime("%H:%M"),
+        "sent_at": _local(dose.sent_at).isoformat() if dose.sent_at else None,
+        "responded_at": _local(dose.responded_at).isoformat() if dose.responded_at else None,
+        "response_source": dose.response_source,
+        "response_text": dose.response_text,
+        "reason": dose.reason,
+        "caretaker_alerted": dose.caretaker_alerted_at is not None,
+    }
+
+
+# ==========================================================================
+# me
+# ==========================================================================
+
+
+@router.get("/me")
+def get_me(caretaker: Caretaker = Depends(current_caretaker),
+           session: Session = Depends(get_session)) -> dict:
+    family = session.get(Family, caretaker.family_id)
+    patients = session.exec(
+        select(Patient).where(Patient.family_id == caretaker.family_id)).all()
+    return {
+        "id": caretaker.id,
+        "name": caretaker.name,
+        "email": caretaker.email,
+        "phone": caretaker.phone,
+        "relation": caretaker.relation,
+        "language": caretaker.language,
+        "family": {"id": family.id if family else None,
+                   "name": family.name if family else None},
+        "patient_count": len(patients),
+        "needs_phone": not caretaker.phone,
+    }
+
+
+@router.patch("/me")
+def update_me(body: ProfileIn,
+              caretaker: Caretaker = Depends(current_caretaker),
+              session: Session = Depends(get_session)) -> dict:
+    if body.name:
+        caretaker.name = body.name.strip()
+    if body.relation:
+        caretaker.relation = body.relation.strip()
+    if body.language in ("ur", "en"):
+        caretaker.language = body.language
+    if body.phone is not None:
+        cleaned = normalise_number(body.phone)
+        if cleaned and len(cleaned) < 10:
+            raise HTTPException(422, "that does not look like a WhatsApp number")
+        clash = session.exec(
+            select(Caretaker).where(Caretaker.phone == cleaned)
+            .where(Caretaker.id != caretaker.id)).first() if cleaned else None
+        if clash:
+            raise HTTPException(409, "that number is already registered")
+        caretaker.phone = cleaned or None
+
+    session.add(caretaker)
+    session.commit()
+    session.refresh(caretaker)
+    return get_me(caretaker, session)
+
+
+# ==========================================================================
+# patients
+# ==========================================================================
+
+
+@router.get("/patients")
+def list_patients(caretaker: Caretaker = Depends(current_caretaker),
+                  session: Session = Depends(get_session)) -> list[dict]:
+    """Family overview: every patient with today's adherence at a glance."""
+    start, end = _today_bounds()
+    out = []
+    for patient in session.exec(
+            select(Patient).where(Patient.family_id == caretaker.family_id)
+            .order_by(Patient.created_at)).all():
+
+        today = session.exec(
+            select(DoseEvent)
+            .where(DoseEvent.patient_id == patient.id)
+            .where(DoseEvent.scheduled_at >= start)
+            .where(DoseEvent.scheduled_at < end)).all()
+
+        medicines = session.exec(
+            select(Medicine).where(Medicine.patient_id == patient.id)
+            .where(Medicine.active == True)).all()      # noqa: E712
+
+        out.append({
+            "id": patient.id,
+            "name": patient.name,
+            "whatsapp_number": patient.whatsapp_number,
+            "language": patient.language,
+            "opted_in": patient.opted_in,
+            "stopped": patient.stopped,
+            "medicine_count": len(medicines),
+            "today": {
+                "total": len(today),
+                "taken": sum(1 for d in today if d.state in TAKEN_STATES),
+                "missed": sum(1 for d in today if d.state == "MISSED"),
+                "pending": sum(1 for d in today if d.state not in DECIDED_STATES),
+            },
+            "adherence": _adherence(session, patient.id),
+        })
+    return out
+
+
+@router.post("/patients", status_code=201)
+def create_patient(body: PatientIn,
+                   caretaker: Caretaker = Depends(current_caretaker),
+                   session: Session = Depends(get_session)) -> dict:
+    existing = session.exec(
+        select(Patient).where(Patient.whatsapp_number == body.whatsapp_number)).first()
+    if existing:
+        raise HTTPException(409, "a patient with that WhatsApp number already exists")
+
+    patient = Patient(family_id=caretaker.family_id, name=body.name.strip(),
+                      whatsapp_number=body.whatsapp_number, language=body.language,
+                      # Reminders start immediately. The opt-in message is sent
+                      # separately and flips this to a confirmed true.
+                      opted_in=True, opted_in_at=datetime.now(timezone.utc))
+    session.add(patient)
+
+    # §8: the caretaker's relation to the patient is set when they link.
+    if body.relation and caretaker.relation in (None, "", "caregiver"):
+        caretaker.relation = body.relation.strip()
+        session.add(caretaker)
+
+    session.commit()
+    session.refresh(patient)
+    log.info("caretaker %s added patient %s", caretaker.id, patient.id)
+    return {"id": patient.id, "name": patient.name,
+            "whatsapp_number": patient.whatsapp_number}
+
+
+@router.get("/patients/{patient_id}")
+def get_patient(patient_id: str,
+                caretaker: Caretaker = Depends(current_caretaker),
+                session: Session = Depends(get_session)) -> dict:
+    patient = _owned_patient(patient_id, caretaker, session)
+    today = date.today()
+
+    medicines = []
+    for medicine in session.exec(
+            select(Medicine).where(Medicine.patient_id == patient.id)
+            .order_by(Medicine.created_at)).all():
+        schedule = session.exec(
+            select(Schedule).where(Schedule.medicine_id == medicine.id)).first()
+        reference = session.get(MedicineReference, medicine.reference_id) \
+            if medicine.reference_id else None
+
+        remaining = None
+        if schedule:
+            remaining = max(0, (schedule.end_date - today).days + 1)
+
+        medicines.append({
+            "id": medicine.id,
+            "name": medicine.name,
+            "strength": medicine.strength,
+            "form": medicine.form,
+            "active": medicine.active,
+            "schedule": {
+                "dose_times": schedule.dose_times if schedule else [],
+                "duration_days": schedule.duration_days if schedule else None,
+                "start_date": schedule.start_date.isoformat() if schedule else None,
+                "end_date": schedule.end_date.isoformat() if schedule else None,
+                "days_remaining": remaining,
+                "finished": bool(schedule and schedule.end_date < today),
+            } if schedule else None,
+            "info": {
+                "purpose_ur": reference.purpose_ur if reference else None,
+                "purpose_en": reference.purpose_en if reference else None,
+                "food_rule": reference.food_rule if reference else None,
+                "confirmed": bool(reference and reference.confirmed),
+            } if reference else None,
+            "adherence": _adherence(session, patient.id, medicine_id=medicine.id),
+        })
+
+    return {
+        "id": patient.id,
+        "name": patient.name,
+        "whatsapp_number": patient.whatsapp_number,
+        "language": patient.language,
+        "opted_in": patient.opted_in,
+        "stopped": patient.stopped,
+        "medicines": medicines,
+        "adherence": _adherence(session, patient.id),
+    }
+
+
+@router.get("/patients/{patient_id}/today")
+def today_doses(patient_id: str,
+                caretaker: Caretaker = Depends(current_caretaker),
+                session: Session = Depends(get_session)) -> dict:
+    """Today's doses. Polled every 5 seconds while the page is open."""
+    patient = _owned_patient(patient_id, caretaker, session)
+    start, end = _today_bounds()
+
+    rows = session.exec(
+        select(DoseEvent, Medicine)
+        .join(Schedule, Schedule.id == DoseEvent.schedule_id)
+        .join(Medicine, Medicine.id == Schedule.medicine_id)
+        .where(DoseEvent.patient_id == patient.id)
+        .where(DoseEvent.scheduled_at >= start)
+        .where(DoseEvent.scheduled_at < end)
+        .order_by(DoseEvent.scheduled_at)).all()
+
+    doses = [_dose_json(d, m) for d, m in rows]
+    return {
+        "patient_id": patient.id,
+        "date": datetime.now(settings.tz).date().isoformat(),
+        "server_time": datetime.now(settings.tz).strftime("%H:%M"),
+        "doses": doses,
+        "summary": {
+            "total": len(doses),
+            "taken": sum(1 for d in doses if d["state"] in TAKEN_STATES),
+            "missed": sum(1 for d in doses if d["state"] == "MISSED"),
+            "pending": sum(1 for d in doses if d["state"] not in DECIDED_STATES),
+        },
+    }
+
+
+@router.get("/patients/{patient_id}/events")
+def event_log(patient_id: str, limit: int = Query(50, ge=1, le=200),
+              caretaker: Caretaker = Depends(current_caretaker),
+              session: Session = Depends(get_session)) -> list[dict]:
+    """Everything that happened, newest first - messages and symptoms."""
+    patient = _owned_patient(patient_id, caretaker, session)
+
+    events: list[dict] = []
+    for row in session.exec(
+            select(MessageLog).where(MessageLog.patient_id == patient.id)
+            .order_by(col(MessageLog.created_at).desc()).limit(limit)).all():
+        events.append({
+            "kind": "message",
+            "at": _local(row.created_at).isoformat(),
+            "direction": row.direction,
+            "type": row.kind,
+            "body": row.body,
+            "template": row.template_name,
+            "status": row.status,
+            "error": row.error,
+        })
+
+    for row in session.exec(
+            select(SymptomReport).where(SymptomReport.patient_id == patient.id)
+            .order_by(col(SymptomReport.reported_at).desc()).limit(20)).all():
+        events.append({
+            "kind": "symptom",
+            "at": _local(row.reported_at).isoformat(),
+            "body": row.text_verbatim,
+            "severity": row.severity,
+        })
+
+    events.sort(key=lambda e: e["at"], reverse=True)
+    return events[:limit]
+
+
+# ==========================================================================
+# medicines
+# ==========================================================================
+
+
+@router.post("/medicines/lookup")
+async def lookup_medicine(body: LookupIn,
+                          caretaker: Caretaker = Depends(current_caretaker)) -> dict:
+    """Draft the medicine information for the caretaker to review.
+
+    Reuses an existing row when there is one, so the same medicine is not
+    looked up twice. **The result is a DRAFT either way** - even an already
+    confirmed row is shown for review, because §14 Phase 4 requires the
+    caretaker to see it before it applies to *their* patient.
+    """
+    existing = knowledge.get_any(body.name)
+    if existing is not None:
+        return {"source": "existing", "already_confirmed": existing.confirmed,
+                **existing.as_dict()}
+
+    draft = await knowledge.fetch_draft(body.name)
+    recognised = any([draft.purpose_ur, draft.purpose_en, draft.food_rule])
+    return {"source": "ai_fetched", "already_confirmed": False,
+            "recognised": recognised, **draft.as_dict()}
+
+
+@router.post("/medicines", status_code=201)
+async def create_medicine(body: MedicineIn,
+                          caretaker: Caretaker = Depends(current_caretaker),
+                          session: Session = Depends(get_session)) -> dict:
+    """Confirm and add. One transaction: reference row, medicine, schedule.
+
+    Reaching this endpoint IS the caretaker's confirmation - it is the only
+    thing that ever sets `confirmed = true` (invariant 9).
+    """
+    patient = _owned_patient(body.patient_id, caretaker, session)
+
+    reference_id = await knowledge.save_confirmed(
+        body.name,
+        knowledge.MedicineInfoDraft(
+            canonical_name=body.name,
+            purpose_ur=body.purpose_ur, purpose_en=body.purpose_en,
+            food_rule=body.food_rule, common_timing=body.common_timing,
+            source="caretaker_edited" if body.edited else "ai_fetched",
+        ),
+        caretaker_id=caretaker.id,
+    )
+
+    medicine = Medicine(patient_id=patient.id, reference_id=reference_id,
+                        name=body.name.strip(), strength=(body.strength or "").strip() or None,
+                        form=(body.form or "").strip() or None)
+    session.add(medicine)
+    session.commit()
+    session.refresh(medicine)
+
+    start = date.today()
+    # end_date is INCLUSIVE - the last day a dose is due (SCHEMA.md).
+    schedule = Schedule(medicine_id=medicine.id, dose_times=body.dose_times,
+                        duration_days=body.duration_days, start_date=start,
+                        end_date=start + timedelta(days=body.duration_days - 1))
+    session.add(schedule)
+    session.commit()
+    session.refresh(schedule)
+
+    log.info("caretaker %s added %s for patient %s (%d days, %s)",
+             caretaker.id, medicine.name, patient.id,
+             body.duration_days, body.dose_times)
+
+    # Materialise straight away so the dashboard shows today's doses without
+    # waiting up to a minute for the next tick.
+    try:
+        from app.scheduler.ticker import materialise_doses
+        materialise_doses()
+    except Exception as exc:  # noqa: BLE001 - the ticker will catch up
+        log.warning("immediate materialisation failed: %s", exc)
+
+    return {
+        "id": medicine.id,
+        "name": medicine.name,
+        "schedule": {
+            "dose_times": schedule.dose_times,
+            "duration_days": schedule.duration_days,
+            "start_date": schedule.start_date.isoformat(),
+            "end_date": schedule.end_date.isoformat(),
+        },
+    }
+
+
+@router.delete("/medicines/{medicine_id}")
+def stop_medicine(medicine_id: str,
+                  caretaker: Caretaker = Depends(current_caretaker),
+                  session: Session = Depends(get_session)) -> dict:
+    """Stop a medicine. Deactivates rather than deletes - the history is what
+    the reports are made of."""
+    medicine = session.get(Medicine, medicine_id)
+    if medicine is None:
+        raise HTTPException(404, "medicine not found")
+    _owned_patient(medicine.patient_id, caretaker, session)
+
+    medicine.active = False
+    session.add(medicine)
+    for schedule in session.exec(
+            select(Schedule).where(Schedule.medicine_id == medicine.id)).all():
+        schedule.active = False
+        session.add(schedule)
+    session.commit()
+    log.info("caretaker %s stopped medicine %s", caretaker.id, medicine_id)
+    return {"stopped": True}
+
+
+# ==========================================================================
+# patient messaging
+# ==========================================================================
+
+
+@router.post("/patients/{patient_id}/optin")
+async def send_optin(patient_id: str,
+                     caretaker: Caretaker = Depends(current_caretaker),
+                     session: Session = Depends(get_session)) -> dict:
+    """Send the opt-in message so the patient knows what is about to arrive."""
+    patient = _owned_patient(patient_id, caretaker, session)
+    from app.whatsapp import client as wa
+
+    message_id = await wa.send_template(
+        to=patient.whatsapp_number, template="patient_optin",
+        lang=patient.language, body_vars=[patient.name, caretaker.name])
+    return {"sent": True, "message_id": message_id}
+
+
+@router.get("/whatsapp/status")
+async def whatsapp_status(caretaker: Caretaker = Depends(current_caretaker)) -> dict:
+    """Whether messages can actually go out right now."""
+    from app.whatsapp.client import bridge_status
+
+    return await bridge_status()

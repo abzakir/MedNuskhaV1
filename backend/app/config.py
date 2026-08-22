@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     escalate_minutes: int = Field(default=30, ge=1)
     next_public_api_base: str = "http://localhost:8000"
 
+    #: Section 4.1 allows a dev bypass for sign-in. When true, any request
+    #: without a Bearer token is treated as a fixed dev caretaker. It logs a
+    #: warning every time it is used, and must be false in production.
+    dev_auth_bypass: bool = False
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def sqlalchemy_url(self) -> str:
