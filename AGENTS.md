@@ -212,7 +212,7 @@ hackathon demo, or is covered by the Alibaba Cloud hackathon credits.
 | Backend host | **Alibaba Cloud ECS** small instance | hackathon credits | Sponsor platform, and it's the demo requirement |
 | Frontend host | **Vercel** free tier | free | One `git push` deploys the dashboard |
 | Dev tunnel | **ngrok** free | free | Local webhook while iterating |
-| PDF | **WeasyPrint** | free | Python-native, no browser dependency |
+| PDF | **fpdf2** + `uharfbuzz` | free | Pure Python, no system libraries, and shapes Urdu correctly |
 | Medicine lookup | **Qwen** (DashScope) with web search grounding if available | hackathon credits | Fetches a *draft* only — never trusted until a caretaker confirms it |
 
 **On the voice stack specifically:**
@@ -237,6 +237,24 @@ hackathon demo, or is covered by the Alibaba Cloud hackathon credits.
   F0 tier — identical voices, 500k characters a month free.
 - **Do not silently swap the voice stack.** If a service can't be configured,
   log it in `PROJECT_LOG.md` and ask before switching.
+
+**On the PDF stack specifically:**
+- *Replaced WeasyPrint on 2026-08-23.* WeasyPrint needs GTK/Pango, which pip
+  does not ship on Windows — `import weasyprint` raised
+  `OSError: cannot load library 'libgobject-2.0-0'` on the dev machine, so the
+  reports could not be built or checked locally at all. fpdf2 is pure Python
+  and behaves identically on Windows and the Ubuntu ECS box, with nothing to
+  install per teammate and no apt packages in Phase 8.
+- **`uharfbuzz` is not optional.** fpdf2 only shapes Arabic script when
+  `set_text_shaping(True)` is on and uharfbuzz is importable. Without it Urdu
+  renders as disconnected letters in left-to-right order — unreadable. The
+  patient's own words are quoted verbatim in the doctor report, and ASR
+  returns Urdu script, so this path is always exercised.
+- **The Urdu font is bundled in the repo** at
+  `backend/app/reports/fonts/`, not taken from the system. Windows has Arial
+  with Arabic coverage and a bare Ubuntu box has neither it nor Noto, so
+  relying on system fonts would mean the report renders here and comes out
+  blank on ECS.
 
 If anything in this table changes, update the table AND log the reason.
 
@@ -759,7 +777,7 @@ that voice is tuned during the pilot. Do not spend Day 4 on this.
 
 **Claude prompt:**
 > Build `reports/doctor_pdf.py` and `reports/caretaker_pdf.py` using
-> WeasyPrint, both against the `report` table from §8.
+> fpdf2, both against the `report` table from §8.
 >
 > **Doctor report** — one page, clinical and neutral: patient name, medicine
 > name and tenure (start date, duration, end date), adherence percentage for

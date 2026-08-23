@@ -31,6 +31,7 @@ from sqlmodel import col, select
 
 from app.config import settings
 from app.db import get_engine, session_scope
+from app.i18n import strings
 from app.models import (  # noqa: F401
     Caretaker,
     DoseEvent,
@@ -392,6 +393,110 @@ def _due_escalations() -> list[str]:
         return [d.id for d in rows]
 
 
+async def course_end_reports() -> dict:
+    """Once a day: generate both reports for any course that has ended.
+
+    A course is finished when its INCLUSIVE `end_date` is in the past. For each
+    one that has no `course_end` reports yet, both PDFs are generated, archived
+    and the caretaker is sent the two links.
+
+    Idempotent by construction: the `report` rows are the record of what has
+    already been sent, so a second run the next morning finds nothing to do.
+    Generating never happens twice for the same course even if the message
+    fails, which is the right way round - a caretaker who gets no message can
+    still open the report from the dashboard, whereas duplicate PDFs of a
+    finished course arriving daily would be noise.
+    """
+    from app.reports import service, storage
+
+    counts = {"courses": 0, "reports": 0, "messaged": 0}
+    try:
+        courses = await asyncio.to_thread(service.finished_courses)
+    except Exception as exc:  # noqa: BLE001 - never take the scheduler down
+        log.exception("could not look for finished courses: %s", exc)
+        return counts
+
+    for course in courses:
+        patient_id = course["patient_id"]
+        medicine_id = course["medicine_id"]
+        counts["courses"] += 1
+
+        carers = await asyncio.to_thread(data_caretakers, patient_id)
+        lang = (carers[0].get("language") if carers else None) or "en"
+
+        links: dict[str, str] = {}
+        try:
+            for kind in course["missing"]:
+                row, _ = await asyncio.to_thread(
+                    service.generate, kind, patient_id, medicine_id,
+                    trigger="course_end", lang=lang)
+                links[kind] = storage.share_url(row.id)
+                counts["reports"] += 1
+        except Exception as exc:  # noqa: BLE001 - one bad course, not all
+            log.exception("could not generate reports for medicine %s: %s",
+                          medicine_id, exc)
+            continue
+
+        # A kind that already existed has no fresh link, so reuse the old row.
+        for kind in ("doctor", "caretaker"):
+            if kind not in links:
+                existing = await asyncio.to_thread(
+                    _latest_report_id, patient_id, medicine_id, kind)
+                if existing:
+                    links[kind] = storage.share_url(existing)
+
+        if not carers:
+            log.warning("course %s finished but the patient has no caretaker "
+                        "with a phone number", medicine_id)
+            continue
+
+        context = await asyncio.to_thread(_course_context, patient_id, medicine_id)
+        for carer in carers:
+            body = strings.t(
+                "report_ready", carer.get("language") or "en",
+                patient=context["patient"], medicine=context["medicine"],
+                doctor_url=links.get("doctor", "-"),
+                caretaker_url=links.get("caretaker", "-"))
+            try:
+                await wa.send_text(carer["phone"], body)
+                counts["messaged"] += 1
+            except Exception as exc:  # noqa: BLE001 - try the next caretaker
+                log.error("could not send the report link to %s: %s",
+                          carer["phone"], exc)
+
+    if any(counts.values()):
+        log.info("course-end reports: %s", counts)
+    return counts
+
+
+def data_caretakers(patient_id: str) -> list[dict]:
+    from app.reports import data as report_data
+    return report_data.caretakers_of(patient_id)
+
+
+def _latest_report_id(patient_id: str, medicine_id: str, kind: str) -> str | None:
+    from app.models import Report
+    with session_scope() as session:
+        return session.exec(
+            select(Report.id)
+            .where(Report.patient_id == patient_id)
+            .where(Report.medicine_id == medicine_id)
+            .where(Report.kind == kind)
+            .order_by(col(Report.generated_at).desc())
+        ).first()
+
+
+def _course_context(patient_id: str, medicine_id: str) -> dict:
+    with session_scope() as session:
+        patient = session.get(Patient, patient_id)
+        medicine = session.get(Medicine, medicine_id)
+        label = medicine.name if medicine else "the medicine"
+        if medicine and medicine.strength:
+            label = f"{medicine.name} {medicine.strength}"
+        return {"patient": patient.name if patient else "your family member",
+                "medicine": label}
+
+
 async def tick() -> dict:
     """One minute of work. Safe to run concurrently with itself."""
     counts = {"materialised": 0, "reminded": 0, "followed_up": 0,
@@ -487,7 +592,11 @@ def start_scheduler() -> bool:
     _scheduler = AsyncIOScheduler(timezone=str(settings.tz))
     _scheduler.add_job(tick, "interval", minutes=1, id="dose_tick",
                        max_instances=1, coalesce=True, misfire_grace_time=55)
-    # The daily course-end report job is registered here in Phase 6.
+    # Phase 6. Early morning local time: the course ended yesterday, and a
+    # caretaker would rather find the report waiting than be pinged at 3am.
+    _scheduler.add_job(course_end_reports, "cron", hour=8, minute=5,
+                       id="course_end_reports", max_instances=1,
+                       coalesce=True, misfire_grace_time=3600)
     _scheduler.start()
 
     log.info("scheduler started - followup=%dmin escalate=%dmin tz=%s",

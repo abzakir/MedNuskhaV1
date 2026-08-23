@@ -177,7 +177,12 @@ export default function PatientPage() {
         ) : (
           <div className="space-y-3">
             {patient.medicines.map((m) => (
-              <MedicineCard key={m.id} medicine={m} onChange={loadPatient} />
+              <MedicineCard
+                key={m.id}
+                medicine={m}
+                patientId={id}
+                onChange={loadPatient}
+              />
             ))}
           </div>
         )}

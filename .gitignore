@@ -42,3 +42,6 @@ frontend/.env*.local
 Thumbs.db
 .idea/
 .vscode/
+
+# Generated report PDFs from scripts/verify/verify_reports.py
+scripts/verify/_out/

@@ -221,6 +221,18 @@ STRINGS: dict[str, dict[str, str]] = {
         "ur": "Maaf kijiye, ye number hamare paas darj nahi hai.",
         "en": "Sorry, this number isn't registered with us.",
     },
+    # ------------------------------------------------------------------
+    #: Sent to the CARETAKER when a course finishes and both reports have
+    #: been generated (Phase 6). Two links: one to hand the doctor, one to
+    #: read themselves.
+    "report_ready": {
+        "ur": ("{patient} ka {medicine} ka course mukammal ho gaya hai.\n\n"
+               "Doctor ke liye report:\n{doctor_url}\n\n"
+               "Aap ke liye:\n{caretaker_url}"),
+        "en": ("{patient} has finished the {medicine} course.\n\n"
+               "Report for the doctor:\n{doctor_url}\n\n"
+               "For you:\n{caretaker_url}"),
+    },
 }
 
 

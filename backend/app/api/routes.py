@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 import jwt
 from sqlalchemy.exc import IntegrityError
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session, col, func, select
 
@@ -890,3 +890,87 @@ async def whatsapp_status(caretaker: Caretaker = Depends(current_caretaker)) -> 
     from app.whatsapp.client import bridge_status
 
     return await bridge_status()
+
+
+# ==========================================================================
+# reports (Phase 6)
+# ==========================================================================
+
+
+@router.get("/patients/{patient_id}/report.pdf")
+def patient_report(patient_id: str,
+                   kind: str = Query("doctor", pattern="^(doctor|caretaker)$"),
+                   medicine_id: str | None = Query(None),
+                   caretaker: Caretaker = Depends(current_caretaker),
+                   session: Session = Depends(get_session)) -> Response:
+    """Generate either report for one course, right now (`trigger=on_demand`).
+
+    The PDF is streamed back rather than redirected to, so the button works
+    whether or not Supabase Storage is configured - archiving is best-effort.
+    """
+    from app.reports import data as report_data
+    from app.reports import service
+
+    patient = _owned_patient(patient_id, caretaker, session)
+
+    if medicine_id is None:
+        medicine_id = report_data.latest_medicine_id(patient_id)
+        if medicine_id is None:
+            raise HTTPException(404, "this patient has no medicine to report on")
+    else:
+        medicine = session.get(Medicine, medicine_id)
+        if medicine is None or medicine.patient_id != patient_id:
+            raise HTTPException(404, "medicine not found")
+
+    try:
+        row, blob = service.generate(
+            kind, patient_id, medicine_id, trigger="on_demand",
+            lang=caretaker.language or "en")
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    log.info("caretaker %s downloaded the %s report for patient %s",
+             caretaker.id, kind, patient_id)
+    return Response(
+        content=blob,
+        media_type="application/pdf",
+        headers={"Content-Disposition":
+                 f'inline; filename="{_report_filename(patient.name, kind, row)}"'},
+    )
+
+
+@router.get("/reports/{report_id}.pdf")
+def shared_report(report_id: str, t: str = Query("", max_length=64)) -> Response:
+    """A report opened from the WhatsApp link. Deliberately unauthenticated.
+
+    A caretaker taps this on their phone, where there is no Bearer token, so
+    the guard is the HMAC token in `t` instead. The `report` table was frozen
+    at the end of Phase 0 with nowhere to store a token, so it is derived from
+    the report id under WEBHOOK_SECRET rather than stored - see
+    reports/storage.py.
+    """
+    from app.reports import service, storage
+
+    if not storage.token_ok(report_id, t):
+        # 404, not 403: a wrong token must not confirm the report exists.
+        raise HTTPException(404, "report not found")
+
+    found = service.fetch(report_id)
+    if found is None:
+        raise HTTPException(404, "report not found")
+
+    row, blob = found
+    return Response(
+        content=blob,
+        media_type="application/pdf",
+        headers={"Content-Disposition":
+                 f'inline; filename="mednuskha-{row.kind}-{row.period_end}.pdf"',
+                 # A share link is per-report and immutable once generated.
+                 "Cache-Control": "private, max-age=3600"},
+    )
+
+
+def _report_filename(patient_name: str, kind: str, row: Report) -> str:
+    safe = "".join(c for c in patient_name if c.isalnum() or c in " -_").strip()
+    safe = safe.replace(" ", "-").lower() or "patient"
+    return f"{safe}-{kind}-{row.period_end}.pdf"

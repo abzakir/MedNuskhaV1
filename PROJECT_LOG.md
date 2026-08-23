@@ -38,7 +38,7 @@ scheduler, WhatsApp connection and how many AI keys are alive.
 | 4 | Website: sign-up, patients, medicines | done — 42/42 |
 | — | Caretaker commands over WhatsApp | done — 11/11 (added at team request) |
 | 5 | Voice notes attached to reminders | **not built** |
-| 6 | The two PDF reports | **not built** |
+| 6 | The two PDF reports | done — 58/58 + 20/20 over HTTP + 25 unit tests |
 | 7 | Prescription OCR (stretch) | not built |
 | 8 | Deploy to ECS + Vercel | not built |
 
@@ -50,51 +50,64 @@ proven (see the decisions log); it is not yet wired into the reminder path.
 ### Test inventory
 
 ```
-pytest backend/tests/                    57 unit tests, no services needed
-scripts/verify/                          ~200 integration checks, live services
+pytest backend/tests/                    82 unit tests, no services needed
+scripts/verify/                          ~280 integration checks, live services
 ```
 
 `scripts/verify/README.md` says what each one proves and how to run it.
 
 ### Known gaps
 
-- **No voice note on reminders yet** (Phase 5) and **no PDF reports** (Phase 6).
-  The reports are what the pitch closes on, so they are the priority.
-- **WeasyPrint cannot import on Windows** — it needs GTK. This blocks Phase 6
-  locally but not on the Ubuntu box in Phase 8. Decide which before starting
-  Phase 6, not during it.
+- **No voice note on reminders yet** (Phase 5). Everything else in the core
+  product is built.
+- **`SUPABASE_SERVICE_KEY` is not set**, so reports are generated and served
+  but **not archived** to Supabase Storage. Nothing is broken by this — the
+  share link rebuilds the PDF from the database — but Phase 5's voice notes
+  will need the same key, so it is worth adding. See `.env.example`.
 - **Buttons do not exist.** WhatsApp removed them for non-official clients, so
   reply options are numbered text. Invariant 2's replacement is documented in
   the decisions log and pinned by `test_state_machine.py`.
 - **Baileys is a release candidate** (7.0.0-rc14). Deliberate: 6.17.16 cannot
   resolve LID senders, which means it cannot tell who replied.
 - **`DEV_AUTH_BYPASS=true`** in the local `.env`. It must be false in production.
+- **A demo patient is sitting in the database** — "Zubaida Bibi (demo)" on
+  920000000197, with a full 14 days of history, seeded so the dashboard report
+  buttons have something real to render. Delete it when you are done:
+  `backend\.venv\Scripts\python.exe scripts\verify\purge_patient.py 920000000197`
 
 ---
 
 ## Current phase
 
-**Phase 5 (voice notes on reminders) and Phase 6 (the two PDF reports) are what
-remain of the core product.** Nothing external is blocking either — every
-account, key and credential is in place and verified.
+**Phase 5 (voice notes on reminders) is the only piece of the core product
+left.** Phase 6 landed this session. Nothing external is blocking Phase 5 —
+every account and key is in place, except the Supabase secret key it shares
+with report archiving.
 
 ## Next steps
 
-1. **Phase 6 — the two reports.** A clinical one-page PDF for the doctor and a
-   plain-language one for the caretaker, both from the `report` table, plus the
-   daily job that generates them when a course ends and messages the caretaker
-   a link. This is what the pitch closes on. Resolve the WeasyPrint/GTK
-   question first.
-2. **Phase 5 — outbound voice.** Pre-generate one OGG/Opus file per unique dose
+1. **Click the two report buttons on the dashboard yourself.** Everything below
+   them is verified — the endpoint they call is 20/20 over real HTTP — but the
+   click itself was never performed, because the dashboard needs a Supabase
+   sign-in and this session would not sign in on anyone's behalf. Open
+   "Zubaida Bibi (demo)", which has 14 days of history waiting.
+2. **Add `SUPABASE_SERVICE_KEY` to `.env`** (Project Settings → API keys → the
+   `sb_secret_` one). Reports work without it; they are just rebuilt on each
+   open rather than archived. Phase 5 needs the same key to upload voice notes,
+   so this unblocks both. `verify_reports.py` reports it as a warning until it
+   is set.
+3. **Phase 5 — outbound voice.** Pre-generate one OGG/Opus file per unique dose
    text when a schedule is confirmed, store it in Supabase Storage, attach it to
    the reminder. Never synthesise in the reminder path. Caching by
    `(medicine, dose_time)` matters — one file per unique sentence, not per dose.
-   The Supabase `voice-notes` bucket is private, so uploading needs the
-   `sb_secret_` key rather than the publishable one.
-3. **Phase 8 — deploy.** ECS for the backend and bridge, Vercel for the
-   dashboard. WeasyPrint works there. Set `DEV_AUTH_BYPASS=false`.
-4. Phase 7 (prescription OCR) is the stretch and should only be attempted if
-   1–3 are finished.
+   `reports/storage.py` already has the upload/bucket plumbing to copy.
+4. **Phase 8 — deploy.** ECS for the backend and bridge, Vercel for the
+   dashboard. The PDF stack no longer needs system packages — that was the
+   point of dropping WeasyPrint. Set `DEV_AUTH_BYPASS=false`, and set
+   `NEXT_PUBLIC_API_BASE` to the real host or every report share link sent over
+   WhatsApp will point at `localhost:8000`.
+5. Phase 7 (prescription OCR) is the stretch and should only be attempted if
+   1–4 are finished.
 
 ---
 
@@ -153,13 +166,33 @@ push at the end of every phase**, one commit per phase, `feat(scope): ...` per
 
 ## Gotchas discovered
 
-- **WeasyPrint installs on Windows but will not import.** `import weasyprint`
-  raises `OSError: cannot load library 'libgobject-2.0-0'` — it needs the GTK3
-  runtime, which pip does not provide. **This blocks Phase 6 on Windows.** Two
-  ways out: install the GTK3 Runtime for Windows on the dev machine, or accept
-  that PDFs only generate on the Ubuntu ECS box (Phase 8), where `apt` pulls
-  Pango in as a normal dependency. Decide before Phase 6 starts, not during it.
-  Nothing imports weasyprint yet, so this is inert until then.
+- **WeasyPrint installed on Windows but would not import**, and has now been
+  **removed** — `import weasyprint` raised
+  `OSError: cannot load library 'libgobject-2.0-0'`, because it needs the GTK3
+  runtime and pip does not provide it. Replaced with fpdf2 in Session 8; see
+  that entry for why, and AGENTS.md §6 for the note that replaced this one.
+- **fpdf2 renders Urdu only with `set_text_shaping(True)` AND uharfbuzz
+  installed.** Miss either and Arabic-script letters do not join and come out
+  left-to-right — unreadable, but it still produces a valid-looking PDF, so
+  nothing fails loudly. `reports/pdf.py` sets both up; do not "simplify" it.
+- **Noto Naskh Arabic has no Latin glyphs.** A mixed line like
+  `Panadol لے لی ہے` — which is exactly what a verbatim quote looks like —
+  cannot be rendered from it alone. The fix is Noto Sans as the main font with
+  Naskh registered via `set_fallback_fonts()`. **Fallback does not work from a
+  core font**: Helvetica is Latin-1 and raises `FPDFUnicodeEncodingException`
+  before fallback can engage, so the main font must itself be a Unicode TTF.
+- **You cannot grep a fpdf2 PDF for its own text.** The bundled TTFs are
+  subset, so the content stream holds glyph ids, not characters — a byte search
+  finds nothing whether or not the sentence is on the page. Turning compression
+  off does not help. Use a real extractor (`pypdfium2`) or you will "fix" a
+  disclaimer that was there all along.
+- **The Supabase publishable key cannot write to Storage.** Verified
+  2026-08-23: it lists buckets fine, but both bucket creation and upload come
+  back `new row violates row-level security policy`. Uploading needs the
+  `sb_secret_` key. This applies to Phase 5's voice notes too.
+- **`dev.ps1` runs uvicorn without `--reload`.** A backend started before a
+  code change silently 404s on new routes, which looks exactly like a routing
+  bug. Restart it, or run a second instance on another port to test against.
 - **Everything else installs and imports cleanly on Python 3.14**, including the
   two that were most at risk: `faster-whisper 1.2.1` (with `ctranslate2 4.8.1`
   cp314 wheels) and `google-cloud-texttospeech 2.37.0`. The Day-3 wheel risk is
@@ -288,6 +321,79 @@ push at the end of every phase**, one commit per phase, `feat(scope): ...` per
   `reactionMessage`, `pollUpdateMessage` and `keepInChatMessage`.
 
 ## Decisions log
+
+### 2026-08-23 — Session 8 (Phase 6: the two reports, and a wording fix)
+
+**Done:** Phase 6 in full — `reports/data.py`, `pdf.py`, `doctor_pdf.py`,
+`caretaker_pdf.py`, `storage.py`, `service.py`; the daily course-end job in
+`ticker.py`; `GET /api/patients/:id/report.pdf` and the share link
+`GET /api/reports/:id.pdf`; both buttons on the medicine card. 58/58 against
+the live database, 20/20 over real HTTP, 25 new unit tests (82 total).
+
+**The PDF stack changed: WeasyPrint → fpdf2 + uharfbuzz.** Put to the team
+with both options costed, and chosen by them. WeasyPrint could not import on
+Windows at all (no GTK), so Phase 6 was unverifiable locally. The alternative
+was `winget install tschoonj.GTKForWindows` on every Windows machine plus Pango
+and Noto packages on ECS. fpdf2 is pure pip and behaves identically on both.
+Proven before proposing, per Session 4's precedent: real Urdu was rendered and
+read back off the page before the swap was offered. §6, its new PDF note,
+`requirements.txt` and the Phase 6 prompt are all updated. `jinja2` went too —
+it was only there for WeasyPrint's HTML templating and nothing imported it.
+
+**Fonts are committed to the repo**, at `backend/app/reports/fonts/`, ~1.7MB
+of OFL-licensed Noto. Not a casual choice — Windows has Arial with full Urdu
+coverage but it is not redistributable, and a bare Ubuntu box has neither.
+Bundling is the only way the ECS output matches what was signed off here.
+
+**Key decisions:**
+
+- **Both reports read one `data.py`.** They describe the same course from two
+  angles and are generated a second apart; if each ran its own queries they
+  could disagree about how many doses were taken, and a caretaker holding both
+  would have no way to know which was right.
+- **Doses awaiting a reply are excluded from adherence, never counted as
+  missed.** Otherwise the same fortnight reports 82% at night and 58% at
+  breakfast, purely because the evening dose has not been answered yet. Pinned
+  by four unit tests, because it is the kind of thing a later "simplification"
+  would quietly undo.
+- **The caretaker report contains no percentage at all.** §14 asks for "a
+  caring update, not a spreadsheet". "11 of 14" is a fact a person can hold;
+  "78.6% adherence" is a metric about their mother. A test asserts no `%`
+  survives into that PDF.
+- **The share link points at our own API, not at Supabase Storage.** A
+  WhatsApp link cannot carry a Bearer token, and §8 froze the `report` table
+  with nowhere to put a share token — so the token is *derived*: an HMAC of
+  the report id under `WEBHOOK_SECRET`. Stateless, unguessable, no schema
+  change. A wrong token returns 404 rather than 403, so a guess cannot confirm
+  a report exists.
+- **Archiving is best-effort, and the endpoint regenerates.** Every number in
+  the document comes from Postgres, so a rebuilt PDF says exactly what the
+  archived one said. That is what lets the whole feature work today without
+  the secret key.
+- **The daily job is idempotent through the `report` rows themselves**, not a
+  flag. Generation happens once even if the WhatsApp send fails — the right
+  way round, since a caretaker who missed the message can still open the report
+  from the dashboard, whereas duplicate PDFs arriving every morning is noise.
+
+**Also fixed, at the team's request:** not understanding a message used to send
+a fixed string — the patient got "samajh nahi aaya" verbatim every time and the
+caretaker got "send help" however close their message was to a real command.
+Both paths now spend the whole Groq pool on wording one short reply and only
+fall back to the canned string when every key is down. The model chooses words,
+never actions: dispatch has already decided nothing matched, and the draft
+still goes through guardrails. `llm.try_chat()` is the shared piece.
+Live result: "wo band kar do na" now points at `pause`, "ammi ka kya haal hai"
+at `status`.
+
+**Not done:** the dashboard buttons were never actually clicked. The endpoint
+behind them is verified over real HTTP and the frontend type-checks, but the
+dashboard requires a Supabase sign-in and this session would not sign in on
+anyone's behalf. "Zubaida Bibi (demo)" is seeded with 14 days of history for
+exactly that click — see Next steps.
+
+**Before touching this area next:** `reports/data.py` is the only module that
+decides what a number means. Change adherence, streaks or "hardest time" there
+and both PDFs follow; change either PDF and you have made them disagree.
 
 ### 2026-08-23 — Session 7 (caretaker commands, and this handover)
 

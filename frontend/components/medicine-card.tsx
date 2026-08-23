@@ -12,9 +12,11 @@ const TENURES = [7, 14, 30];
 
 export function MedicineCard({
   medicine,
+  patientId,
   onChange,
 }: {
   medicine: MedicineDetail;
+  patientId: string;
   onChange: () => void;
 }) {
   const s = medicine.schedule;
@@ -33,6 +35,19 @@ export function MedicineCard({
     setTimes((prev) =>
       prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t].sort(),
     );
+  }
+
+  async function openReport(kind: "doctor" | "caretaker") {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      await api.openReport(patientId, kind, medicine.id);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   function startEditing() {
@@ -261,7 +276,26 @@ export function MedicineCard({
             )}
           </div>
 
-          <div className="flex items-center gap-1">
+          <div className="flex flex-wrap items-center gap-1">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => openReport("doctor")}
+              title="One-page clinical summary of this course, for the doctor"
+            >
+              Doctor report
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => openReport("caretaker")}
+              title="A plain-language summary of how this course went"
+            >
+              Your report
+            </Button>
+            <span className="mx-1 h-4 w-px bg-border" aria-hidden />
             <Button size="sm" variant="outline" onClick={startEditing} disabled={busy}>
               Edit times
             </Button>

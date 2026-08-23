@@ -20,6 +20,51 @@ export class ApiError extends Error {
   }
 }
 
+/** Fetch a PDF with the caretaker's token attached and open it in a new tab.
+ *
+ * A plain <a href> cannot carry the Bearer header, so the file is fetched,
+ * turned into a blob URL and opened from there. The object URL is revoked on
+ * a timer rather than immediately - revoking it straight away races the new
+ * tab and shows a blank viewer. */
+export async function openPdf(path: string, filename: string): Promise<void> {
+  const session = await getSession();
+  const headers: Record<string, string> = {};
+  if (session?.access_token) {
+    headers.Authorization = `Bearer ${session.access_token}`;
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, { headers, cache: "no-store" });
+  } catch {
+    throw new ApiError(
+      `Can't reach the server at ${API_BASE}. Is the backend running?`,
+      0,
+    );
+  }
+  if (!res.ok) {
+    let message = `Could not build the report (${res.status})`;
+    try {
+      const body = await res.json();
+      if (typeof body.detail === "string") message = body.detail;
+    } catch {
+      /* keep the default */
+    }
+    throw new ApiError(message, res.status);
+  }
+
+  const url = URL.createObjectURL(await res.blob());
+  const opened = window.open(url, "_blank");
+  if (!opened) {
+    // Pop-up blocked - fall back to a download so the click is not wasted.
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const session = await getSession();
   const headers: Record<string, string> = {
@@ -222,6 +267,18 @@ export const api = {
   }) => post<{ id: string }>("/api/patients", body),
 
   sendOptin: (id: string) => post<{ sent: boolean }>(`/api/patients/${id}/optin`),
+
+  /** Build and open one of the two reports for a medicine's course. */
+  openReport: (
+    patientId: string,
+    kind: "doctor" | "caretaker",
+    medicineId?: string,
+  ) =>
+    openPdf(
+      `/api/patients/${patientId}/report.pdf?kind=${kind}` +
+        (medicineId ? `&medicine_id=${medicineId}` : ""),
+      `mednuskha-${kind}.pdf`,
+    ),
 
   /** Undo a STOP - a phrase can be misread, and without this every
    *  future reminder stays silently dead. */

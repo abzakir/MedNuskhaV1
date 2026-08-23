@@ -37,8 +37,13 @@ av>=12.0.0
 supabase>=2.9.0
 
 # --- reports ---
-weasyprint>=62.3
-jinja2>=3.1.4
+# fpdf2 replaced WeasyPrint on 2026-08-23. WeasyPrint needs GTK/Pango, which
+# pip does not provide on Windows, so it could not even import on the dev
+# machine. fpdf2 is pure Python and renders identically on Windows and the
+# ECS box with no system packages. uharfbuzz is what makes Urdu legible -
+# without it Arabic-script letters do not join. See PROJECT_LOG.md.
+fpdf2>=2.8.8
+uharfbuzz>=0.39.0
 
 # --- tests ---
 pytest>=8.3.0

@@ -76,6 +76,16 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""
     supabase_storage_bucket: str = "voice-notes"
 
+    #: Uploading needs a SECRET key, not the publishable one. Verified
+    #: 2026-08-23: the publishable key can list buckets but every write is
+    #: refused by row-level security ("new row violates row-level security
+    #: policy"). Without this, reports are still generated and still served -
+    #: they are just not archived to Storage. See PROJECT_LOG.md.
+    supabase_service_key: str = ""
+    #: Reports live apart from voice notes so the two can have different
+    #: retention: a voice note is disposable, a report is a medical record.
+    supabase_reports_bucket: str = "reports"
+
     # --- App ---
     timezone: str = "Asia/Karachi"
     followup_minutes: int = Field(default=15, ge=1)

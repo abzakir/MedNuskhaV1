@@ -37,8 +37,30 @@ Set `PYTHONIOENCODING=utf-8` first if Urdu output makes your console throw a
 | `verify_api.py` | Every REST endpoint, cross-family isolation, the confirm-before-active rule | database |
 | `verify_edit_delete.py` | Changing times mid-course, stop vs delete, history never rewritten | database |
 | `verify_caretaker.py` | Caretaker commands over WhatsApp, and that a clinical question is still refused | database + Groq |
+| `verify_reports.py` | Both PDFs off a seeded 14-day course, the numbers in them, verbatim Urdu on the page, and the daily course-end job firing exactly once | database |
+| `verify_report_api.py` | The two dashboard buttons and the unauthenticated WhatsApp share link, over real HTTP | database + backend running |
 | `verify_keyring.py` | API-key rotation, cooldowns, dead keys, exhaustion errors | none |
 | `check_clinical.py` | The dose-change detector, including the phrasings a caretaker uses | none |
+
+### Two notes on the report scripts
+
+`verify_reports.py` reads the finished PDFs back to check what is printed on
+them. That needs **pypdfium2**, which is not a product dependency — fpdf2
+subsets the bundled fonts, so the page content is glyph ids rather than text
+and grepping the bytes finds nothing either way. Without it those particular
+checks downgrade to a warning:
+
+```powershell
+backend\.venv\Scripts\python.exe -m pip install pypdfium2
+```
+
+`verify_report_api.py` talks to a **running** backend. `dev.ps1` starts uvicorn
+without `--reload`, so a backend started before a code change will 404 on new
+routes. Either restart it, or point the script at a second instance:
+
+```powershell
+$env:MEDNUSKHA_API = "http://127.0.0.1:8001"
+```
 
 ## Utilities
 
