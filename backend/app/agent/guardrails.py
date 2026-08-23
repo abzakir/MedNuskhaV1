@@ -142,9 +142,14 @@ ASK_TO_CHANGE_PATTERNS = [
     r"\bbarha\s*(dun|doon|sakt)", r"\bkam\s*kar\s*(dun|doon|sakt)",
     r"\bskip\s*kar", r"\bmiss\s*kar",
     # English
-    r"\bcan\s+i\s+(take|have)\s+(two|three|four|\d+|more|extra|another)",
-    r"\bshould\s+i\s+(take|stop|skip|double|increase|decrease)",
-    r"\bcan\s+i\s+(stop|skip|double|increase|decrease|halve)",
+    # "give" matters as much as "take": the CARETAKER asks "can I give her
+    # two tablets", the patient asks "can I take two". Same request, same
+    # answer, and the caretaker path would otherwise miss it entirely.
+    r"\b(can|could|should|may|shall)\s+(i|we|she|he|they)\s+"
+    r"(take|takes|have|has|give|administer|offer|stop|skip|double|increase|"
+    r"decrease|halve|raise|lower|change)\b",
+    r"\bgive\s+(her|him|them)\s+(a\s+)?(one|two|three|four|five|\d+|more|"
+    r"extra|another|half)\b",
     r"\bis\s+it\s+ok(ay)?\s+to\s+(take|stop|skip|double)",
     r"\btake\s+(it\s+)?twice\b", r"\bdouble\s+(the\s+)?dose",
 ]

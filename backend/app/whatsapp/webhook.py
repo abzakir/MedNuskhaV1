@@ -240,10 +240,11 @@ async def _route(msg: InboundMessage, context: dict) -> None:
         return
 
     if context.get("patient_id") is None:
-        # A caretaker wrote to us. Nothing to interpret against - the agent
-        # speaks to patients, not carers.
-        log.info("message from caretaker %s - no dose flow to apply",
-                 context.get("caretaker_id"))
+        if context.get("caretaker_id") and msg.kind in ("text", "audio"):
+            await handle_caretaker_message(msg, context)
+        else:
+            log.info("ignoring %s from caretaker %s",
+                     msg.kind, context.get("caretaker_id"))
         return
 
     if msg.kind in ("text", "audio"):
@@ -251,6 +252,43 @@ async def _route(msg: InboundMessage, context: dict) -> None:
         return
 
     log.info("ignoring %s message from %s", msg.kind, context["number"])
+
+
+async def handle_caretaker_message(msg: InboundMessage, context: dict) -> None:
+    """The caretaker asking us something, by text or by voice note.
+
+    A voice note is transcribed and then treated identically - the caretaker
+    may be driving, or may simply find it faster.
+    """
+    from app.agent import caretaker as care
+
+    row = await asyncio.to_thread(_load_caretaker, context["caretaker_id"])
+    if row is None:
+        return
+
+    text = msg.text or ""
+    if msg.kind == "audio":
+        from app.voice import asr
+
+        audio = getattr(msg, "media_bytes", None)
+        if not audio:
+            log.warning("caretaker audio %s arrived with no audio",
+                        msg.wa_message_id)
+            return
+        text = await asr.transcribe(audio, language=row["language"] or "ur")
+        await asyncio.to_thread(_store_transcript, msg.wa_message_id, text)
+        log.info("caretaker voice note transcribed: %r", text[:80])
+
+    await care.handle(text, row)
+
+
+def _load_caretaker(caretaker_id: str) -> dict | None:
+    with session_scope() as session:
+        row = session.get(Caretaker, caretaker_id)
+        if row is None:
+            return None
+        return {"id": row.id, "name": row.name, "phone": row.phone,
+                "language": row.language}
 
 
 async def handle_patient_reply(msg: InboundMessage, context: dict) -> None:

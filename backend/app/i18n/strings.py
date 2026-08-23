@@ -83,6 +83,64 @@ STRINGS: dict[str, dict[str, str]] = {
     },
 
     # ------------------------------------------------------------------
+    # caretaker commands - the caretaker talking TO us on WhatsApp
+    # ------------------------------------------------------------------
+    "care_help": {
+        "ur": ("Main MedNuskha hoon. Aap mujhe ye likh sakte hain:\n"
+               "- status : aaj ki report\n"
+               "- rok dein : yaad-dahani band\n"
+               "- shuru karein : dobara chalu\n"
+               "Dawai add ya edit karne ke liye website kholein."),
+        "en": ("This is MedNuskha. You can send me:\n"
+               "- status : today's report\n"
+               "- pause : stop reminders\n"
+               "- resume : start them again\n"
+               "To add or edit a medicine, open the website."),
+    },
+    "care_status": {
+        "ur": "{patient} ki aaj ki report:\nLi: {taken} / {total}\n{lines}",
+        "en": "{patient} today:\nTaken: {taken} / {total}\n{lines}",
+    },
+    "care_status_none": {
+        "ur": "{patient} ke liye aaj koi dawai ka waqt nahi hai.",
+        "en": "No doses are scheduled for {patient} today.",
+    },
+    "care_paused": {
+        "ur": ("Theek hai. {patient} ki yaad-dahani rok di hai. Dobara chalu "
+               "karne ke liye \"shuru karein\" likhein."),
+        "en": ("Done. Reminders for {patient} are paused. Send \"resume\" to "
+               "start them again."),
+    },
+    "care_resumed": {
+        "ur": "{patient} ki yaad-dahani dobara chalu kar di hai.",
+        "en": "Reminders for {patient} are running again.",
+    },
+    "care_no_patient": {
+        "ur": ("Aap ne abhi tak koi mareez add nahi kiya. Website par ja kar "
+               "add karein."),
+        "en": "You haven't added anyone yet. Add them on the website.",
+    },
+    "care_which_patient": {
+        "ur": "Kis ke baare mein? {names}",
+        "en": "Which one? {names}",
+    },
+    "care_unclear": {
+        "ur": ("Maaf kijiye ga, samajh nahi aaya. \"help\" likhein to main "
+               "bata dun ke kya likh sakte hain."),
+        "en": ("Sorry, I didn't understand. Send \"help\" and I'll list what "
+               "you can ask."),
+    },
+    #: A caretaker asking a clinical question gets the same refusal a patient
+    #: does - being the carer does not make the agent a doctor (invariant 8).
+    "care_refusal": {
+        "ur": ("Ye faisla main nahi kar sakta - ye doctor sahab ka kaam hai. "
+               "Aap {patient} ke doctor se raabta karein. Main ne ye baat "
+               "report mein likh di hai."),
+        "en": ("I can't make that decision - that is the doctor's call. Please "
+               "contact {patient}'s doctor. I've noted it in the report."),
+    },
+
+    # ------------------------------------------------------------------
     # onboarding
     # ------------------------------------------------------------------
     "patient_optin": {
