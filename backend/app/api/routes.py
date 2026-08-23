@@ -18,6 +18,7 @@ from typing import Any
 
 import httpx
 import jwt
+from sqlalchemy.exc import IntegrityError
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session, col, func, select
@@ -97,7 +98,24 @@ def _find_or_create(session: Session, *, auth_id: str, email: str | None,
     row = Caretaker(family_id=family.id, name=display, email=email,
                     auth_user_id=auth_id, verified=True)
     session.add(row)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # The dashboard opens several requests at once, so two of them can
+        # reach this point together. The unique index on auth_user_id decides
+        # which one wins; the loser adopts the winner's row and bins the
+        # family it optimistically created. Without this, one sign-in produced
+        # four caretakers and four families.
+        session.rollback()
+        session.delete(session.get(Family, family.id))
+        session.commit()
+        existing = session.exec(
+            select(Caretaker).where(Caretaker.auth_user_id == auth_id)).first()
+        if existing is None:
+            raise
+        log.info("lost the create race for %s - using the existing row", auth_id)
+        return existing
+
     session.refresh(row)
     log.info("new caretaker %s (%s) with family %s", row.id, email, family.id)
     return row

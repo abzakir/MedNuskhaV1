@@ -133,8 +133,10 @@ class Caretaker(SQLModel, table=True):
     #: somewhere to put the identity. Both nullable, so existing rows and the
     #: dev bypass keep working. See PROJECT_LOG.md.
     email: str | None = Field(default=None, index=True)
-    #: Supabase Auth user id (the `sub` claim). Unique per account.
-    auth_user_id: str | None = Field(default=None, index=True)
+    #: Supabase Auth user id (the `sub` claim). UNIQUE - the dashboard
+    #: fires several requests at once on load, and without this they each
+    #: create their own caretaker AND their own family.
+    auth_user_id: str | None = Field(default=None, index=True, unique=True)
 
     # phone + OTP signup (section 4.1); a dev bypass is acceptable.
     otp_code: str | None = Field(default=None)

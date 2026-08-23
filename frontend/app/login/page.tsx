@@ -1,5 +1,15 @@
 "use client";
 
+/**
+ * Caretaker sign-in and sign-up.
+ *
+ * Email and password only. Google was deliberately dropped for the hackathon:
+ * it needs a Google Cloud OAuth client, and the sign-in method is not what the
+ * product is being judged on. The provider check in lib/supabase.ts remains,
+ * so switching it back on later is a Supabase setting rather than a code
+ * change.
+ */
+
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -10,14 +20,15 @@ import {
   getAuthSettings,
   getSession,
   signInWithEmail,
-  signInWithGoogle,
   signUpWithEmail,
   type AuthSettings,
 } from "@/lib/supabase";
 
+type Mode = "in" | "up";
+
 export default function LoginPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<"in" | "up">("in");
+  const [mode, setMode] = useState<Mode>("in");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -33,8 +44,13 @@ export default function LoginPage() {
     getAuthSettings().then(setSettings);
   }, [router]);
 
-  const googleEnabled = settings?.providers.google ?? false;
   const needsEmailConfirmation = settings ? !settings.autoconfirm : false;
+
+  function switchTo(next: Mode) {
+    setMode(next);
+    setError(null);
+    setNotice(null);
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -45,14 +61,14 @@ export default function LoginPage() {
       if (mode === "up") {
         await signUpWithEmail(email, password, name);
         const session = await getSession();
-        if (session) router.push("/dashboard");
-        else
-          setNotice(
-            "Account created. Supabase has email confirmation switched on, so " +
-              "check your inbox for the link, then come back and sign in. " +
-              "(You can turn that off in Supabase → Authentication → " +
-              "Sign In / Providers → Email.)",
-          );
+        if (session) {
+          router.push("/dashboard");
+          return;
+        }
+        setNotice(
+          "Account created. Check your inbox for the confirmation link, then sign in.",
+        );
+        setMode("in");
       } else {
         await signInWithEmail(email, password);
         router.push("/dashboard");
@@ -60,17 +76,6 @@ export default function LoginPage() {
     } catch (err) {
       setError((err as Error).message);
     } finally {
-      setBusy(false);
-    }
-  }
-
-  async function google() {
-    setBusy(true);
-    setError(null);
-    try {
-      await signInWithGoogle();
-    } catch (err) {
-      setError((err as Error).message);
       setBusy(false);
     }
   }
@@ -88,13 +93,24 @@ export default function LoginPage() {
         </div>
 
         <div className="rounded-xl border bg-card p-6 shadow-sm">
+          {/* Both options visible at once - a new caretaker should not have to
+              hunt for sign-up inside a sentence. */}
+          <div className="mb-6 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
+            <TabButton active={mode === "in"} onClick={() => switchTo("in")}>
+              Sign in
+            </TabButton>
+            <TabButton active={mode === "up"} onClick={() => switchTo("up")}>
+              Sign up
+            </TabButton>
+          </div>
+
           <h2 className="text-lg font-medium">
-            {mode === "in" ? "Welcome back" : "Create your account"}
+            {mode === "in" ? "Welcome back" : "Create your caretaker account"}
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
             {mode === "in"
               ? "Sign in to look after your family."
-              : "Set up reminders for someone you care about."}
+              : "Set up medicine reminders for someone you care about."}
           </p>
 
           {!authConfigured && (
@@ -114,7 +130,11 @@ export default function LoginPage() {
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Zakir"
                   required
+                  autoFocus
                 />
+                <p className="text-xs text-muted-foreground">
+                  Used in messages to your family member.
+                </p>
               </div>
             )}
 
@@ -125,7 +145,7 @@ export default function LoginPage() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
+                placeholder="you@gmail.com"
                 required
                 autoComplete="email"
               />
@@ -155,7 +175,6 @@ export default function LoginPage() {
                 {notice}
               </p>
             )}
-
             {mode === "up" && needsEmailConfirmation && (
               <p className="rounded-lg bg-sky-50 p-3 text-xs text-sky-900 dark:bg-sky-950/50 dark:text-sky-200">
                 This project requires email confirmation, so you&apos;ll get a link
@@ -164,51 +183,26 @@ export default function LoginPage() {
             )}
 
             <Button type="submit" className="w-full" disabled={busy || !authConfigured}>
-              {busy ? "Please wait…" : mode === "in" ? "Sign in" : "Create account"}
+              {busy
+                ? "Please wait…"
+                : mode === "in"
+                  ? "Sign in"
+                  : "Create account"}
             </Button>
           </form>
 
-          <div className="my-5 flex items-center gap-3">
-            <span className="h-px flex-1 bg-border" />
-            <span className="text-xs text-muted-foreground">or</span>
-            <span className="h-px flex-1 bg-border" />
-          </div>
-
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={google}
-            disabled={busy || !authConfigured || !googleEnabled}
-            title={
-              googleEnabled
-                ? undefined
-                : "Google sign-in is not enabled on this Supabase project yet"
-            }
-          >
-            <GoogleMark />
-            Continue with Google
-          </Button>
-
-          {settings && !googleEnabled && (
-            <p className="mt-2 text-center text-xs text-muted-foreground">
-              Google isn&apos;t switched on for this project yet &mdash; use email above.
+          {mode === "in" && (
+            <p className="mt-5 border-t pt-5 text-center text-sm text-muted-foreground">
+              Looking after someone for the first time?{" "}
+              <button
+                type="button"
+                className="font-medium text-teal-700 underline-offset-4 hover:underline dark:text-teal-400"
+                onClick={() => switchTo("up")}
+              >
+                Create an account
+              </button>
             </p>
           )}
-
-          <p className="mt-5 text-center text-sm text-muted-foreground">
-            {mode === "in" ? "New here?" : "Already have an account?"}{" "}
-            <button
-              type="button"
-              className="font-medium text-teal-700 underline-offset-4 hover:underline dark:text-teal-400"
-              onClick={() => {
-                setMode(mode === "in" ? "up" : "in");
-                setError(null);
-                setNotice(null);
-              }}
-            >
-              {mode === "in" ? "Create an account" : "Sign in"}
-            </button>
-          </p>
         </div>
 
         <p className="mt-6 text-center text-xs text-muted-foreground">
@@ -219,25 +213,26 @@ export default function LoginPage() {
   );
 }
 
-function GoogleMark() {
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
   return (
-    <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        fill="#4285F4"
-        d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8Z"
-      />
-      <path
-        fill="#34A853"
-        d="M12 24c3.2 0 5.9-1.1 7.9-2.9l-3.9-3c-1.1.7-2.4 1.2-4 1.2-3.1 0-5.7-2.1-6.6-4.9H1.4v3.1A12 12 0 0 0 12 24Z"
-      />
-      <path
-        fill="#FBBC05"
-        d="M5.4 14.4a7.2 7.2 0 0 1 0-4.6V6.7H1.4a12 12 0 0 0 0 10.8l4-3.1Z"
-      />
-      <path
-        fill="#EA4335"
-        d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.4 6.7l4 3.1C6.3 6.9 8.9 4.8 12 4.8Z"
-      />
-    </svg>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+        active
+          ? "bg-background text-foreground shadow-sm"
+          : "text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
