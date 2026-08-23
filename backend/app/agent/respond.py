@@ -236,6 +236,17 @@ async def _on_question(intent, patient, lang, caretakers, primary, known) -> Non
     the agent says it does not know. It never asks a model what a medicine is
     for, and never repeats an unconfirmed draft.
     """
+    # "Can I take Panadol twice?" is not a request for information, it is a
+    # request to change a dose. Answering it at all - even with "I don't know"
+    # - is the wrong shape of reply. Section 11 wants the refusal and a human.
+    if guardrails.asks_to_change_medication(intent.text or ""):
+        log.info("patient asked to change a dose - refusing (section 11)")
+        body = strings.t("refusal_clinical", lang, caretaker=primary)
+        await wa.send_text(patient.whatsapp_number, body)
+        await _alert_caretakers(caretakers, reason="dose_change_request",
+                                patient=patient, words=intent.text or "")
+        return
+
     name = intent.medicine
     if not name:
         doses = await asyncio.to_thread(open_doses_for, patient.id)
@@ -282,6 +293,15 @@ async def _on_stop(intent, patient, lang, caretakers, primary, known) -> None:
 
 async def _on_unclear(intent, patient, lang, caretakers, primary, known) -> None:
     """Ask ONE short question. Never guess (section 11)."""
+    # An unclear message that is nevertheless clearly about changing a dose
+    # gets the refusal rather than a clarifying question.
+    if guardrails.asks_to_change_medication(intent.text or ""):
+        body = strings.t("refusal_clinical", lang, caretaker=primary)
+        await wa.send_text(patient.whatsapp_number, body)
+        await _alert_caretakers(caretakers, reason="dose_change_request",
+                                patient=patient, words=intent.text or "")
+        return
+
     doses = await asyncio.to_thread(open_doses_for, patient.id, False)
 
     if len(doses) == 1:

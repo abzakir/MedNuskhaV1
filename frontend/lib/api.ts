@@ -223,6 +223,13 @@ export const api = {
 
   sendOptin: (id: string) => post<{ sent: boolean }>(`/api/patients/${id}/optin`),
 
+  /** Undo a STOP - a phrase can be misread, and without this every
+   *  future reminder stays silently dead. */
+  resumePatient: (id: string) =>
+    post<{ resumed: boolean; doses_created: number }>(
+      `/api/patients/${id}/resume`,
+    ),
+
   lookupMedicine: (name: string) =>
     post<MedicineDraft>("/api/medicines/lookup", { name }),
 
@@ -240,7 +247,28 @@ export const api = {
     edited: boolean;
   }) => post<{ id: string }>("/api/medicines", body),
 
+  /** Change dose times, course length or strength on a running course. */
+  updateMedicine: (
+    id: string,
+    body: { dose_times: string[]; duration_days: number; strength?: string },
+  ) =>
+    patch<{
+      id: string;
+      dose_times: string[];
+      duration_days: number;
+      end_date: string;
+      doses_removed: number;
+      doses_created: number;
+    }>(`/api/medicines/${id}`, body),
+
+  /** Stop reminders but keep the history - what the reports are made of. */
   stopMedicine: (id: string) => del<{ stopped: boolean }>(`/api/medicines/${id}`),
+
+  /** Delete outright, history and all. For a mistake, not for finishing. */
+  deleteMedicine: (id: string) =>
+    del<{ deleted: boolean; doses_removed: number }>(
+      `/api/medicines/${id}?permanent=true`,
+    ),
 
   whatsappStatus: () => get<WhatsAppStatus>("/api/whatsapp/status"),
 };

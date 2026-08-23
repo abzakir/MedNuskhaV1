@@ -27,8 +27,8 @@ from app.agent import knowledge
 from app.config import settings
 from app.db import get_session
 from app.models import (Caretaker, DoseEvent, Family, Medicine,
-                        MedicineReference, MessageLog, Patient, Schedule,
-                        SymptomReport)
+                        MedicineReference, MessageLog, Patient, Report,
+                        Schedule, SymptomReport)
 from app.whatsapp.client import normalise_number
 
 log = logging.getLogger(__name__)
@@ -191,6 +191,28 @@ class PatientIn(BaseModel):
 
 class LookupIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+
+
+class ScheduleIn(BaseModel):
+    """Change the times or the length of a course that is already running."""
+
+    dose_times: list[str] = Field(min_length=1, max_length=6)
+    duration_days: int = Field(ge=1, le=365)
+    strength: str | None = None
+
+    @field_validator("dose_times")
+    @classmethod
+    def _times(cls, v: list[str]) -> list[str]:
+        out = []
+        for raw in v:
+            try:
+                hh, mm = raw.strip().split(":")
+                h, m = int(hh), int(mm)
+                assert 0 <= h < 24 and 0 <= m < 60
+            except Exception as exc:
+                raise ValueError(f"bad dose time {raw!r}, expected HH:MM") from exc
+            out.append(f"{h:02d}:{m:02d}")
+        return sorted(set(out))
 
 
 class MedicineIn(BaseModel):
@@ -636,26 +658,180 @@ async def create_medicine(body: MedicineIn,
     }
 
 
-@router.delete("/medicines/{medicine_id}")
-def stop_medicine(medicine_id: str,
-                  caretaker: Caretaker = Depends(current_caretaker),
-                  session: Session = Depends(get_session)) -> dict:
-    """Stop a medicine. Deactivates rather than deletes - the history is what
-    the reports are made of."""
+@router.patch("/medicines/{medicine_id}")
+def update_schedule(medicine_id: str, body: ScheduleIn,
+                    caretaker: Caretaker = Depends(current_caretaker),
+                    session: Session = Depends(get_session)) -> dict:
+    """Change the dose times or the length of a course already running.
+
+    Doses that have already been sent or answered are left alone - they are
+    history, and the reports are made of them. Only future doses that no
+    longer match the new times are removed, and the new ones are materialised
+    immediately so the dashboard reflects the change straight away.
+    """
     medicine = session.get(Medicine, medicine_id)
     if medicine is None:
         raise HTTPException(404, "medicine not found")
     _owned_patient(medicine.patient_id, caretaker, session)
 
-    medicine.active = False
+    schedule = session.exec(
+        select(Schedule).where(Schedule.medicine_id == medicine.id)).first()
+    if schedule is None:
+        raise HTTPException(404, "this medicine has no schedule")
+
+    if body.strength is not None:
+        medicine.strength = body.strength.strip() or None
+        session.add(medicine)
+
+    schedule.dose_times = body.dose_times
+    schedule.duration_days = body.duration_days
+    # end_date stays INCLUSIVE - the last day a dose is due (SCHEMA.md).
+    schedule.end_date = schedule.start_date + timedelta(days=body.duration_days - 1)
+    schedule.active = True
+    medicine.active = True
+    session.add(schedule)
     session.add(medicine)
-    for schedule in session.exec(
-            select(Schedule).where(Schedule.medicine_id == medicine.id)).all():
-        schedule.active = False
-        session.add(schedule)
     session.commit()
-    log.info("caretaker %s stopped medicine %s", caretaker.id, medicine_id)
-    return {"stopped": True}
+
+    removed = _drop_stale_doses(session, schedule)
+
+    try:
+        from app.scheduler.ticker import materialise_doses
+        created = materialise_doses()
+    except Exception as exc:  # noqa: BLE001 - the ticker will catch up
+        log.warning("re-materialisation after edit failed: %s", exc)
+        created = 0
+
+    log.info("caretaker %s changed %s to %s for %d days (%d dropped, %d created)",
+             caretaker.id, medicine.name, body.dose_times, body.duration_days,
+             removed, created)
+
+    return {
+        "id": medicine.id,
+        "dose_times": schedule.dose_times,
+        "duration_days": schedule.duration_days,
+        "end_date": schedule.end_date.isoformat(),
+        "doses_removed": removed,
+        "doses_created": created,
+    }
+
+
+#: A dose due within this window is left alone - the ticker may already be
+#: mid-send, and yanking the row out from under it is worse than one extra
+#: reminder.
+_TICKER_RACE_WINDOW = timedelta(seconds=90)
+
+
+def _drop_stale_doses(session: Session, schedule: Schedule) -> int:
+    """Remove never-sent doses that no longer match the schedule.
+
+    Only SCHEDULED doses are touched. Anything SENT, answered or missed is
+    history and is left exactly as it is - rewriting what actually happened
+    would corrupt the reports.
+
+    Past-due SCHEDULED doses are removed too, not just future ones. A dose at
+    a time the caretaker has just deleted was never sent to anybody, so
+    leaving it would have the ticker report a MISSED dose for a time that no
+    longer exists on the schedule.
+    """
+    now = datetime.now(timezone.utc)
+    wanted = set(schedule.dose_times)
+    removed = 0
+
+    for dose in session.exec(
+            select(DoseEvent)
+            .where(DoseEvent.schedule_id == schedule.id)
+            .where(DoseEvent.state == "SCHEDULED")).all():
+        due = dose.scheduled_at
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=timezone.utc)
+        if abs(due - now) <= _TICKER_RACE_WINDOW:
+            continue                       # the ticker may be mid-send
+
+        local = due.astimezone(settings.tz)
+        if local.strftime("%H:%M") in wanted and local.date() <= schedule.end_date:
+            continue                       # still valid
+
+        for row in session.exec(
+                select(MessageLog).where(MessageLog.dose_event_id == dose.id)).all():
+            row.dose_event_id = None       # keep the message, drop the link
+            session.add(row)
+        session.delete(dose)
+        removed += 1
+
+    session.commit()
+    return removed
+
+
+@router.delete("/medicines/{medicine_id}")
+def remove_medicine(medicine_id: str, permanent: bool = Query(False),
+                    caretaker: Caretaker = Depends(current_caretaker),
+                    session: Session = Depends(get_session)) -> dict:
+    """Stop a medicine, or delete it outright.
+
+    Stopping is the default and the safer one: reminders end but the history
+    stays, which is what the reports are made of. `permanent=true` is for a
+    mistake - a medicine added with the wrong name, or added twice - and it
+    takes the dose history with it. Messages that were genuinely sent are kept
+    and simply unlinked, because those really did reach the patient.
+    """
+    medicine = session.get(Medicine, medicine_id)
+    if medicine is None:
+        raise HTTPException(404, "medicine not found")
+    _owned_patient(medicine.patient_id, caretaker, session)
+
+    if not permanent:
+        medicine.active = False
+        session.add(medicine)
+        for schedule in session.exec(
+                select(Schedule).where(Schedule.medicine_id == medicine.id)).all():
+            schedule.active = False
+            session.add(schedule)
+        session.commit()
+        log.info("caretaker %s stopped medicine %s", caretaker.id, medicine_id)
+        return {"stopped": True, "deleted": False}
+
+    name = medicine.name
+    schedules = session.exec(
+        select(Schedule).where(Schedule.medicine_id == medicine.id)).all()
+
+    doses = []
+    for schedule in schedules:
+        doses.extend(session.exec(
+            select(DoseEvent).where(DoseEvent.schedule_id == schedule.id)).all())
+
+    # Unlink first, in strict foreign-key order, or Postgres refuses.
+    for dose in doses:
+        for row in session.exec(
+                select(MessageLog).where(MessageLog.dose_event_id == dose.id)).all():
+            row.dose_event_id = None
+            session.add(row)
+        for row in session.exec(
+                select(SymptomReport).where(
+                    SymptomReport.dose_event_id == dose.id)).all():
+            row.dose_event_id = None
+            session.add(row)
+    session.commit()
+
+    for dose in doses:
+        session.delete(dose)
+    session.commit()
+
+    for schedule in schedules:
+        session.delete(schedule)
+    session.commit()
+
+    for row in session.exec(
+            select(Report).where(Report.medicine_id == medicine.id)).all():
+        session.delete(row)
+    session.commit()
+
+    session.delete(medicine)
+    session.commit()
+
+    log.warning("caretaker %s PERMANENTLY deleted medicine %s (%s) and %d doses",
+                caretaker.id, medicine_id, name, len(doses))
+    return {"stopped": True, "deleted": True, "doses_removed": len(doses)}
 
 
 # ==========================================================================
@@ -675,6 +851,37 @@ async def send_optin(patient_id: str,
         to=patient.whatsapp_number, template="patient_optin",
         lang=patient.language, body_vars=[patient.name, caretaker.name])
     return {"sent": True, "message_id": message_id}
+
+
+@router.post("/patients/{patient_id}/resume")
+def resume_patient(patient_id: str,
+                   caretaker: Caretaker = Depends(current_caretaker),
+                   session: Session = Depends(get_session)) -> dict:
+    """Start reminders again for a patient who had stopped.
+
+    A patient can halt everything by replying STOP, and the agent errs towards
+    honouring that. But a phrase can be misread - "nahi mana krdo" was, on a
+    real phone - and without this the caretaker has no way back and every
+    future reminder is silently dead.
+    """
+    patient = _owned_patient(patient_id, caretaker, session)
+    patient.stopped = False
+    patient.opted_in = True
+    if patient.opted_in_at is None:
+        patient.opted_in_at = datetime.now(timezone.utc)
+    session.add(patient)
+    session.commit()
+
+    try:
+        from app.scheduler.ticker import materialise_doses
+        created = materialise_doses()
+    except Exception as exc:  # noqa: BLE001 - the ticker will catch up
+        log.warning("materialisation after resume failed: %s", exc)
+        created = 0
+
+    log.info("caretaker %s resumed reminders for patient %s (%d doses)",
+             caretaker.id, patient_id, created)
+    return {"resumed": True, "doses_created": created}
 
 
 @router.get("/whatsapp/status")

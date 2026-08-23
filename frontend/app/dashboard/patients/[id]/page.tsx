@@ -4,12 +4,12 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { AdherenceNumber, StatusPill } from "@/components/status-pill";
+import { MedicineCard } from "@/components/medicine-card";
+import { StatusPill } from "@/components/status-pill";
 import {
   api,
   type Dose,
   type EventRow,
-  type MedicineDetail,
   type PatientDetail,
   type Today,
 } from "@/lib/api";
@@ -21,6 +21,7 @@ export default function PatientPage() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [optinSent, setOptinSent] = useState(false);
+  const [resuming, setResuming] = useState(false);
 
   const loadPatient = useCallback(
     () => api.patient(id).then(setPatient).catch((e) => setError((e as Error).message)),
@@ -94,10 +95,33 @@ export default function PatientPage() {
       </div>
 
       {patient.stopped && (
-        <p className="rounded-lg bg-rose-50 p-4 text-sm text-rose-900 dark:bg-rose-950/50 dark:text-rose-200">
-          <strong className="font-medium">{patient.name} replied STOP.</strong> No further
-          reminders are being sent.
-        </p>
+        <div className="rounded-lg border border-rose-300 bg-rose-50 p-4 dark:border-rose-900 dark:bg-rose-950/40">
+          <p className="text-sm text-rose-900 dark:text-rose-200">
+            <strong className="font-medium">
+              Reminders are stopped for {patient.name}.
+            </strong>{" "}
+            They replied something we read as STOP, so nothing is being sent. If that
+            was a misunderstanding, start them again.
+          </p>
+          <Button
+            size="sm"
+            className="mt-3"
+            disabled={resuming}
+            onClick={async () => {
+              setResuming(true);
+              try {
+                await api.resumePatient(id);
+                await loadPatient();
+              } catch (e) {
+                setError((e as Error).message);
+              } finally {
+                setResuming(false);
+              }
+            }}
+          >
+            {resuming ? "Starting…" : "Start reminders again"}
+          </Button>
+        </div>
       )}
 
       {/* ------------------------------------------------ today */}
@@ -204,97 +228,6 @@ function DoseRow({ dose }: { dose: Dose }) {
         )}
       </td>
     </tr>
-  );
-}
-
-function MedicineCard({
-  medicine,
-  onChange,
-}: {
-  medicine: MedicineDetail;
-  onChange: () => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const s = medicine.schedule;
-
-  return (
-    <div className="rounded-xl border bg-card p-5">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h3 className="font-medium">
-            {medicine.name}
-            {medicine.strength && (
-              <span className="ml-1.5 text-muted-foreground">{medicine.strength}</span>
-            )}
-            {!medicine.active && (
-              <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                stopped
-              </span>
-            )}
-          </h3>
-
-          {s && (
-            <p className="mt-1 text-sm text-muted-foreground">
-              {s.dose_times.join(", ")} · {s.duration_days} days
-              {s.finished ? (
-                <span className="ml-1.5 text-emerald-700 dark:text-emerald-400">
-                  · course complete
-                </span>
-              ) : (
-                <span className="ml-1.5">
-                  · {s.days_remaining} {s.days_remaining === 1 ? "day" : "days"} left
-                </span>
-              )}
-            </p>
-          )}
-
-          {medicine.info?.purpose_ur && (
-            <p className="mt-2 max-w-prose text-sm">
-              {medicine.info.purpose_ur}
-              {medicine.info.food_rule && (
-                <span className="text-muted-foreground"> — {medicine.info.food_rule}</span>
-              )}
-            </p>
-          )}
-        </div>
-
-        <div className="flex items-center gap-4">
-          <div className="text-right">
-            <AdherenceNumber percent={medicine.adherence.percent} size="sm" />
-            <p className="text-[11px] text-muted-foreground">
-              {medicine.adherence.taken}/{medicine.adherence.decided} taken
-            </p>
-          </div>
-          {medicine.active && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={busy}
-              onClick={async () => {
-                setBusy(true);
-                await api.stopMedicine(medicine.id).catch(() => {});
-                onChange();
-                setBusy(false);
-              }}
-            >
-              Stop
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {medicine.adherence.decided > 0 && (
-        <div className="mt-4 flex gap-4 border-t pt-3 text-xs text-muted-foreground">
-          <span>{medicine.adherence.on_time} on time</span>
-          {medicine.adherence.late > 0 && <span>{medicine.adherence.late} late</span>}
-          {medicine.adherence.missed > 0 && (
-            <span className="text-rose-600 dark:text-rose-400">
-              {medicine.adherence.missed} missed
-            </span>
-          )}
-        </div>
-      )}
-    </div>
   );
 }
 

@@ -122,6 +122,45 @@ def is_emergency(text: str) -> bool:
     return bool(text and _EMERGENCY_RE.search(text))
 
 
+#: A patient ASKING to change their medicine or dose. Checked on the way IN.
+#:
+#: The rules above check what we are about to SAY, which is the right place to
+#: stop the agent inventing advice. But a question like "can I take Panadol
+#: twice?" produces no unsafe text of its own - the agent simply answers
+#: something unhelpful - so nothing fires and the patient never gets the
+#: refusal section 11 requires. Measured on a real phone, 2026-08-23.
+ASK_TO_CHANGE_PATTERNS = [
+    # Urdu script
+    r"دو\s*بار", r"دو\s*گولی", r"زیادہ\s*(لے|کھا)", r"آدھی\s*گولی",
+    r"بند\s*کر\s*(دوں|سکت)", r"چھوڑ\s*(دوں|سکت)", r"بڑھا\s*(دوں|سکت)",
+    # Roman Urdu - "kya main ... le lun / kha lun / sakta hoon"
+    r"\b(do|2|teen|3|char|4)\s*(goli|goliyan|bar|baar|dafa|tablet)",
+    r"\b(aadhi|adhi|half)\s*(goli|tablet)",
+    r"\b(ziyada|zyada|extra)\s*(le|kha|lay)",
+    r"\bband\s*kar\s*(dun|doon|sakt|lun)",
+    r"\bchor\s*(dun|doon|sakt)", r"\bchhor\s*(dun|doon|sakt)",
+    r"\bbarha\s*(dun|doon|sakt)", r"\bkam\s*kar\s*(dun|doon|sakt)",
+    r"\bskip\s*kar", r"\bmiss\s*kar",
+    # English
+    r"\bcan\s+i\s+(take|have)\s+(two|three|four|\d+|more|extra|another)",
+    r"\bshould\s+i\s+(take|stop|skip|double|increase|decrease)",
+    r"\bcan\s+i\s+(stop|skip|double|increase|decrease|halve)",
+    r"\bis\s+it\s+ok(ay)?\s+to\s+(take|stop|skip|double)",
+    r"\btake\s+(it\s+)?twice\b", r"\bdouble\s+(the\s+)?dose",
+]
+_ASK_CHANGE_RE = re.compile("|".join(ASK_TO_CHANGE_PATTERNS), re.IGNORECASE)
+
+
+def asks_to_change_medication(text: str) -> bool:
+    """True when the PATIENT is asking to change a dose or a medicine.
+
+    Deliberately fires on questions as well as statements: "kya main do goli le
+    lun?" and "main do goli le raha hoon" both need a human, and neither is
+    something the agent may answer.
+    """
+    return bool(text and _ASK_CHANGE_RE.search(text))
+
+
 def dose_figures(text: str) -> set[str]:
     """Every "number + unit" in a piece of text, normalised for comparison."""
     return {f"{num.rstrip('0').rstrip('.') if '.' in num else num}"
