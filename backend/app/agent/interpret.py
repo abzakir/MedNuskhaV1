@@ -148,12 +148,24 @@ def _medicine_in_text(text: str, open_doses: list) -> str | None:
     return None
 
 
+#: States where the patient has actually been asked and has not answered.
+AWAITING_STATES = ("SENT", "AWAITING_REPLY", "REMINDED_AGAIN")
+
+
 def resolve_dose(text: str, payload: str | None, open_doses: list
                  ) -> tuple[str | None, bool]:
     """Work out which dose a reply is about.
 
-    Returns (dose_id, ambiguous). `ambiguous` True means several doses are
-    open and the reply did not name one - the caller must ask rather than pick.
+    Returns (dose_id, ambiguous). `ambiguous` True means the reply genuinely
+    could be about more than one dose, and the caller must ask rather than
+    pick.
+
+    A MISSED dose is deliberately NOT treated as competing with one that is
+    still awaiting an answer. Missed doses accumulate - by the second day a
+    patient has several - and counting them made every single reply ambiguous,
+    so the agent answered "samajh nahi aaya" to everything. Observed on a real
+    phone, 2026-08-23. A missed dose only matters when nothing else is open,
+    and then only for a late confirmation.
     """
     if payload:
         from app.whatsapp.client import DOSE_PAYLOAD_RE
@@ -164,15 +176,22 @@ def resolve_dose(text: str, payload: str | None, open_doses: list
 
     if not open_doses:
         return None, False
-    if len(open_doses) == 1:
-        return getattr(open_doses[0], "id", None), False
 
-    named = _medicine_in_text(text, open_doses)
+    awaiting = [d for d in open_doses
+                if getattr(d, "state", None) in AWAITING_STATES]
+    candidates = awaiting or open_doses      # fall back to MISSED ones
+
+    if len(candidates) == 1:
+        return getattr(candidates[0], "id", None), False
+
+    named = _medicine_in_text(text, candidates)
     if named:
         return named, False
 
-    log.info("%d doses open and the reply names none - asking rather than guessing",
-             len(open_doses))
+    # Several are genuinely waiting. The most recent is the one they were just
+    # reminded about, but we do not assume - we ask.
+    log.info("%d doses awaiting a reply and none named - asking rather than "
+             "guessing", len(candidates))
     return None, True
 
 

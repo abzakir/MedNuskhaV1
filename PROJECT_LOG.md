@@ -217,6 +217,23 @@ Phase 8, where a CRLF Makefile breaks.
   start dev. `dev.ps1` now detects a leftover production build (`.next/BUILD_ID`
   only exists after `next build`) and clears it automatically.
 
+- **A MISSED dose must not compete with one that is awaiting a reply.**
+  Observed on a real phone 2026-08-23: a patient with one dose in
+  AWAITING_REPLY and one MISSED earlier that day had *every* reply answered
+  with "samajh nahi aaya". `resolve_dose` counted both as open, called it
+  ambiguous, and refused to guess - correctly by its own rule, but the rule was
+  wrong. Missed doses accumulate, so comprehension degraded by the day.
+  Fixed: doses in SENT / AWAITING_REPLY / REMINDED_AGAIN take priority, and
+  MISSED ones are only candidates when nothing else is open (and only within
+  12 hours, for a late confirmation). Pinned by tests 4, 5 and 6 in
+  `test_state_machine.py`.
+- **WhatsApp sends `protocolMessage` and friends constantly.** They are read
+  receipts, ephemeral-timer changes and revokes - not anything a human typed.
+  The bridge was forwarding them, so the activity log showed the patient
+  saying "other" every few minutes. The bridge now drops
+  `protocolMessage`, `senderKeyDistributionMessage`, `messageContextInfo`,
+  `reactionMessage`, `pollUpdateMessage` and `keepInChatMessage`.
+
 ## Decisions log
 
 ### 2026-08-23 — Session 6 (Phase 3: the agent)

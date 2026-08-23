@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlmodel import col, select
 
@@ -55,13 +55,22 @@ class OpenDose:
 # --------------------------------------------------------------------------
 
 
+#: How far back a MISSED dose can still be confirmed late. Beyond this the
+#: patient is talking about something else, and a stale dose from three days
+#: ago should not be pulled into the conversation.
+LATE_CONFIRMATION_WINDOW = timedelta(hours=12)
+
+
 def open_doses_for(patient_id: str, include_missed: bool = True) -> list[OpenDose]:
     """Doses this patient could plausibly be replying about.
 
     Recently MISSED doses are included so a late confirmation still lands
-    (section 4.8) - that is what turns MISSED into TAKEN_LATE.
+    (section 4.8) - that is what turns MISSED into TAKEN_LATE - but only
+    recent ones. Missed doses accumulate, and an unbounded list of them made
+    every reply look ambiguous.
     """
     states = list(OPEN_STATES) + (["MISSED"] if include_missed else [])
+    cutoff = datetime.now(timezone.utc) - LATE_CONFIRMATION_WINDOW
     out: list[OpenDose] = []
     with session_scope() as session:
         rows = session.exec(
@@ -70,6 +79,7 @@ def open_doses_for(patient_id: str, include_missed: bool = True) -> list[OpenDos
             .join(Medicine, Medicine.id == Schedule.medicine_id)
             .where(DoseEvent.patient_id == patient_id)
             .where(col(DoseEvent.state).in_(states))
+            .where(DoseEvent.scheduled_at >= cutoff)
             .order_by(DoseEvent.scheduled_at.desc())
             .limit(10)
         ).all()

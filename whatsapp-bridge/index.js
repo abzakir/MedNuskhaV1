@@ -182,6 +182,22 @@ async function connect() {
 
 // -------------------------------------------------------------- inbound
 
+/**
+ * Message types WhatsApp sends for its own bookkeeping, not because a human
+ * typed anything. Forwarding these made the activity log show the patient
+ * saying "other" every few minutes, and would have the agent trying to
+ * interpret a read receipt.
+ */
+const IGNORED_TYPES = new Set([
+  'protocolMessage',        // revokes, ephemeral settings, history sync
+  'senderKeyDistributionMessage',
+  'messageContextInfo',
+  'reactionMessage',        // an emoji reaction is not an answer
+  'pollUpdateMessage',
+  'keepInChatMessage',
+  'stickerSyncRmrMessage',
+])
+
 async function handleIncoming(m) {
   if (!m.message) return
   if (m.key.fromMe) return                       // our own outgoing message
@@ -190,6 +206,11 @@ async function handleIncoming(m) {
 
   const { from, lid, unresolved } = await resolveSender(m)
   const contentType = getContentType(m.message)
+
+  if (!contentType || IGNORED_TYPES.has(contentType)) {
+    log.debug(`skipping ${contentType} from ${from} - not a human message`)
+    return
+  }
 
   const payload = {
     id: m.key.id,
