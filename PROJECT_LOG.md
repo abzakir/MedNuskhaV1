@@ -1,102 +1,155 @@
 # MedNuskha — Project Log
 
+> Read `AGENTS.md` first, then this file. Between them a session with no memory
+> can pick the project up exactly where it was left.
+
+---
+
 ## Current state
 
-**WhatsApp works end to end, on a real phone.** Verified 2026-08-23 by sending
-four real messages to the linked number and watching them arrive.
+**The product works end to end on real infrastructure.** A caretaker signs up
+on the website, adds a family member and their medicines, and the patient gets
+WhatsApp reminders at every dose. Replies in Urdu, Roman Urdu or English —
+typed or spoken — are understood and drive the dose state. Silence escalates to
+the caretaker. Proven on a real phone, not in theory.
 
-What runs right now:
+### What is running
 
-- **Baileys bridge** (`whatsapp-bridge/`, Node) holding the WhatsApp socket.
-  Linked number **923200268481**, state `connected`. Login persists in
-  `auth_info/` (gitignored) - scan once, never again.
-- **Backend** (FastAPI) sends through the bridge and receives replies on
-  `/webhook/<WEBHOOK_SECRET>`.
-- **Dose loop** (Phase 2) - 42/42 checks, unchanged by the transport swap.
-- **Database** - Supabase Postgres 17.6, 11 tables.
-- **LLM** - 3 Groq keys pooled and rotating, all verified live.
-  `qwen/qwen3.6-27b` returns clean JSON for intent classification.
-- **Voice out** - edge-tts `ur-PK-UzmaNeural` -> OGG/Opus mono, delivered as a
-  real playable voice note.
-- **Voice in** - Groq `whisper-large-v3` verified on Urdu; local
-  faster-whisper `small` is the offline fallback.
+Four processes. `.\dev.ps1` starts all of them.
 
-**Proven by test, not assumed:** 42/42 dose loop, 16/16 inbound bridge path,
-17/17 key rotation, 4 live WhatsApp sends.
+| Process | Port | What it is |
+|---|---|---|
+| **Dashboard** | 3000 | Next.js 14, the caretaker's website |
+| **Backend** | 8000 | FastAPI — API, scheduler, agent, webhook |
+| **WhatsApp bridge** | 3001 | Node + Baileys, owns the WhatsApp socket |
+| Supabase | — | Postgres 17, 11 tables, hosted |
 
-**What is still stubbed:** the dashboard and its REST API (Phase 4), TTS
-pre-generation (Phase 5), both PDF reports (Phase 6), prescription OCR
-(Phase 7), and deployment (Phase 8).
+`GET /api/health` reports the state of all of it in one call: database,
+scheduler, WhatsApp connection and how many AI keys are alive.
 
-**The agent is live (Phase 3).** A typed or spoken reply in Urdu, Roman Urdu or
-English is classified, drives the dose state machine, and gets one short warm
-answer back. Guardrails run on every outbound message. 38/38 agent checks and
-32/32 guardrail tests pass against live Groq and the live database.
+### Built and verified
 
-**Known gaps:**
+| Phase | What | Status |
+|---|---|---|
+| 0 | Repo, schema, config | done |
+| 1 | WhatsApp transport | done — real messages on a real phone |
+| 2 | Dose loop: remind, follow up, escalate | done — 42/42 |
+| 3 | Agent: understand replies, guardrails | done — 38/38 + 57 unit tests |
+| 4 | Website: sign-up, patients, medicines | done — 42/42 |
+| — | Caretaker commands over WhatsApp | done — 11/11 (added at team request) |
+| 5 | Voice notes attached to reminders | **not built** |
+| 6 | The two PDF reports | **not built** |
+| 7 | Prescription OCR (stretch) | not built |
+| 8 | Deploy to ECS + Vercel | not built |
 
-- **No buttons.** WhatsApp dropped interactive buttons for non-official
-  clients, so reply options are sent as numbered text. **This breaks invariant
-  2** - see the decisions log for the replacement rule, which Phase 3 must
-  implement.
-- WeasyPrint still cannot import on Windows (needs GTK). Blocks Phase 6 here,
-  fine on the Ubuntu ECS box.
+Voice **understanding** already works — an inbound voice note is transcribed
+and acted on. What is missing from Phase 5 is the outbound half: pre-generating
+an Urdu voice note and attaching it to each reminder. The TTS pipeline itself is
+proven (see the decisions log); it is not yet wired into the reminder path.
+
+### Test inventory
+
+```
+pytest backend/tests/                    57 unit tests, no services needed
+scripts/verify/                          ~200 integration checks, live services
+```
+
+`scripts/verify/README.md` says what each one proves and how to run it.
+
+### Known gaps
+
+- **No voice note on reminders yet** (Phase 5) and **no PDF reports** (Phase 6).
+  The reports are what the pitch closes on, so they are the priority.
+- **WeasyPrint cannot import on Windows** — it needs GTK. This blocks Phase 6
+  locally but not on the Ubuntu box in Phase 8. Decide which before starting
+  Phase 6, not during it.
+- **Buttons do not exist.** WhatsApp removed them for non-official clients, so
+  reply options are numbered text. Invariant 2's replacement is documented in
+  the decisions log and pinned by `test_state_machine.py`.
+- **Baileys is a release candidate** (7.0.0-rc14). Deliberate: 6.17.16 cannot
+  resolve LID senders, which means it cannot tell who replied.
+- **`DEV_AUTH_BYPASS=true`** in the local `.env`. It must be false in production.
+
+---
 
 ## Current phase
 
-**Phases 1, 2 and 3 are complete and verified.** Phase 4 (the dashboard) is
-next and is fully unblocked.
+**Phase 5 (voice notes on reminders) and Phase 6 (the two PDF reports) are what
+remain of the core product.** Nothing external is blocking either — every
+account, key and credential is in place and verified.
 
 ## Next steps
 
-1. **Phase 4 - the website.** Supabase Auth (email/password now, Google once
-   the provider is enabled), family overview, patient page with live dose
-   status, add-patient form, and the add-medicine flow that calls
-   `knowledge.fetch_draft` and requires the caretaker to confirm before
-   anything activates.
-2. **Phase 5** - pre-generate voice notes when a schedule is confirmed and
-   attach them to reminders. ASR is already wired.
-3. **Phase 6** - the two PDFs, plus the daily course-end job.
-4. **Phase 8** - deploy. WeasyPrint needs the Ubuntu box.
+1. **Phase 6 — the two reports.** A clinical one-page PDF for the doctor and a
+   plain-language one for the caretaker, both from the `report` table, plus the
+   daily job that generates them when a course ends and messages the caretaker
+   a link. This is what the pitch closes on. Resolve the WeasyPrint/GTK
+   question first.
+2. **Phase 5 — outbound voice.** Pre-generate one OGG/Opus file per unique dose
+   text when a schedule is confirmed, store it in Supabase Storage, attach it to
+   the reminder. Never synthesise in the reminder path. Caching by
+   `(medicine, dose_time)` matters — one file per unique sentence, not per dose.
+   The Supabase `voice-notes` bucket is private, so uploading needs the
+   `sb_secret_` key rather than the publishable one.
+3. **Phase 8 — deploy.** ECS for the backend and bridge, Vercel for the
+   dashboard. WeasyPrint works there. Set `DEV_AUTH_BYPASS=false`.
+4. Phase 7 (prescription OCR) is the stretch and should only be attempted if
+   1–3 are finished.
 
-Nothing external is outstanding.
+---
 
 ## Environment / setup
 
-**Toolchain on the current dev machine (Windows 11):** Python 3.14.4,
-Node 24.18.0, npm 11.16.0, git 2.54.0. **`make` is not installed.**
+### Starting it
 
-**Commands** — the Makefile is canonical and is what runs on the ECS box in
-Phase 8. On Windows use the PowerShell shims, which do the same thing:
+```powershell
+.\dev.ps1        # everything: bridge, backend, dashboard
+.\bridge.ps1     # the bridge alone, when you need to see the QR code
+.\test.ps1       # unit tests
+```
 
-| Purpose | Makefile | Windows |
-|---|---|---|
-| install deps | `make install` | `.\install.ps1` |
-| run both processes | `make dev` | `.\dev.ps1` |
-| tests | `make test` | `.\test.ps1` |
-| seed demo data | `make seed` | `.\seed.ps1` |
+`make dev` / `make bridge` / `make test` do the same on Linux, which is what
+runs on the ECS box in Phase 8.
 
-Backend on :8000 (health at `/api/health`), frontend on :3000.
+### Signing in
 
-**Env vars** — names only, in `.env.example`. `.env` is gitignored. All five of
-`DATABASE_URL`, `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`,
-`WHATSAPP_VERIFY_TOKEN`, `DASHSCOPE_API_KEY` are currently **unset**;
-`/api/health` lists exactly which are missing at any time.
+The dashboard is at **http://localhost:3000**. Sign-up works immediately —
+email confirmation is switched off in Supabase, and Google sign-in is
+deliberately not enabled (the button hides itself when a provider is off).
 
-**Accounts still to create:** Meta Developer + WABA (blocked), DashScope.
-Supabase is done. **No voice account is needed any more** — see the TTS swap
-in the decisions log.
+### Credentials — all present and verified
 
-**Git / GitHub:** remote is `https://github.com/abzakir/MedNuskha`, branch
-`main`. Phase 0 is pushed (`a163ac9`). **Standing instruction from the team:
-commit and push at the end of every phase** — one commit per phase, message in
-the `feat(scope): ...` form from §12. `.gitattributes` normalises the repo to
-LF (with `.ps1` kept CRLF) because the backend ships to an Ubuntu ECS box in
-Phase 8, where a CRLF Makefile breaks.
+| Thing | State |
+|---|---|
+| Supabase Postgres + Storage | working, 11 tables |
+| Supabase Auth (email/password) | working, autoconfirm on |
+| WhatsApp via Baileys | linked to **923200268481**, session in `whatsapp-bridge/auth_info/` |
+| Groq | 3 keys pooled and rotating, all verified |
+| edge-tts (Urdu voice) | no account needed |
+| faster-whisper (local ASR) | model cached |
+| DashScope / Alibaba | not yet — drops into the same rotation when it arrives |
 
-**Team-facing doc:** `MedNuskha_Setup_Guide.pdf` at the repo root is the complete walkthrough of every external task — Meta WhatsApp, Supabase, DashScope, ngrok, Google Cloud TTS, ECS + Vercel deploy — plus a troubleshooting table and a tick-off checklist. Hand it to any teammate doing account setup. Regenerate it if the steps change.
+Everything lives in `.env` at the repo root, which is gitignored. `.env.example`
+documents every name. **`whatsapp-bridge/auth_info/` is a real WhatsApp login —
+never commit it, never share it.**
 
-**WhatsApp templates:** none submitted yet. All four are pending action.
+### If WhatsApp stops working
+
+1. `curl http://localhost:3001/status` — `connected` is what you want.
+2. `qr` means it needs re-pairing: run `.\bridge.ps1` and scan.
+3. `logged_out` means the device was unlinked. Delete
+   `whatsapp-bridge/auth_info/` and pair again.
+4. Replies arriving but nothing happening? Check the bridge is posting to
+   `/webhook/<WEBHOOK_SECRET>` — without the secret the backend answers 403 and
+   the message is silently lost. `dev.ps1` handles this automatically.
+
+### Git
+
+Remote is `https://github.com/abzakir/MedNuskha`, branch `main`. **Commit and
+push at the end of every phase**, one commit per phase, `feat(scope): ...` per
+§12. Claude is not added as a co-author, at the team's request.
+
+---
 
 ## Gotchas discovered
 
@@ -235,6 +288,43 @@ Phase 8, where a CRLF Makefile breaks.
   `reactionMessage`, `pollUpdateMessage` and `keepInChatMessage`.
 
 ## Decisions log
+
+### 2026-08-23 — Session 7 (caretaker commands, and this handover)
+
+**Done:** the caretaker can now run the system from WhatsApp - status, pause,
+resume, help - by text or voice note, in Urdu script, Roman Urdu or English.
+`agent/caretaker.py`, wired through the same webhook the patient uses. 11/11
+verified against the live database.
+
+**Key decisions:**
+
+- **Adding or editing a medicine is deliberately NOT a WhatsApp command.** It
+  needs the confirmation screen. A medicine created from a voice note would
+  bypass precisely the human check invariant 3 exists to enforce, and that is
+  the one place in this product where a plausible hallucination becomes a
+  patient-safety problem rather than a bug.
+- **The clinical check runs BEFORE the pause check.** "Should I stop her
+  medicine?" contains "stop"; reading it as a pause command would be a quietly
+  dangerous misread. Clinical questions are refused whoever asks - being the
+  carer does not make the agent a doctor.
+- **Writing the tests found a real gap.** The dose-change patterns only knew
+  "take", so "can I GIVE her two tablets" - the only way a caretaker would
+  phrase it - passed straight through. Every combination of can/should/may/shall
+  with i/we/she/he/they now matches.
+- **Verification scripts moved into the repo** at `scripts/verify/`. They lived
+  in a scratch directory and would have been lost the moment context was
+  cleared - roughly 200 integration checks representing how every phase was
+  actually proven. Not in the §7 layout; the alternative was losing them.
+- **PROJECT_LOG's live sections were rewritten** rather than appended to. They
+  had grown by accretion across seven sessions and no longer described the
+  system as it stands. §1 says these three sections are overwritten each
+  session; this is that, done properly.
+
+**State at handover:** phases 0-4 complete and verified, plus caretaker
+commands. Phases 5 (outbound voice notes) and 6 (the two PDFs) are what remain
+of the core product. Nothing external is blocking either - every account, key
+and credential is in place and verified working.
+
 
 ### 2026-08-23 — Session 6 (Phase 3: the agent)
 
