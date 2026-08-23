@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import col, select
 
-from app.agent import guardrails, knowledge
+from app.agent import guardrails, knowledge, llm
 from app.agent.interpret import Intent
 from app.db import session_scope
 from app.i18n import strings
@@ -301,6 +301,50 @@ async def _on_stop(intent, patient, lang, caretakers, primary, known) -> None:
                             words=intent.text or "")
 
 
+#: Asking again is the one place the agent may word its own sentence. It is
+#: still only allowed to ask which dose - never to inform, advise or decide.
+_CLARIFY_SYSTEM = """You are MedNuskha, a medicine reminder for an elderly patient.
+You did NOT understand their last message. Write ONE short question asking them
+to say it again.
+
+Hard rules:
+- ONE sentence, at most 20 words. They are 68 and reading slowly.
+- {register}
+- Warm, never scolding. Not understanding is your fault, not theirs.
+- If a medicine is named below, ask whether they have taken THAT medicine.
+- Say NOTHING about what any medicine does, whether to take it, dosage,
+  timing, or health. You are asking a question, not giving information.
+- No greeting, no sign-off, no emoji. Output the sentence only."""
+
+_REGISTER = {
+    "ur": "Write in Roman Urdu (Urdu written in English letters), like: "
+          "\"Maaf kijiye ga, samajh nahi aaya. Kya aap ne Panadol le li hai?\"",
+    "en": "Write in plain English.",
+}
+
+
+async def _clarify_text(intent, lang: str, doses: list) -> str | None:
+    """Let the model word the 'say that again' question. None if it cannot.
+
+    The canned string is always ready behind this - the model is spent on
+    wording, never on deciding anything. Whatever comes back still goes
+    through guardrails like every other draft.
+    """
+    if doses:
+        names = ", ".join(d.medicine_label for d in doses[:3])
+        context = f"Medicine(s) awaiting an answer: {names}."
+    else:
+        context = "No dose is awaiting an answer right now."
+
+    register = _REGISTER.get(lang) or _REGISTER["ur"]
+    said = (intent.text or "").strip()[:200]
+
+    return await llm.try_chat([
+        {"role": "system", "content": _CLARIFY_SYSTEM.format(register=register)},
+        {"role": "user", "content": f"{context}\nThey said: {said!r}"},
+    ])
+
+
 async def _on_unclear(intent, patient, lang, caretakers, primary, known) -> None:
     """Ask ONE short question. Never guess (section 11)."""
     # An unclear message that is nevertheless clearly about changing a dose
@@ -314,13 +358,18 @@ async def _on_unclear(intent, patient, lang, caretakers, primary, known) -> None
 
     doses = await asyncio.to_thread(open_doses_for, patient.id, False)
 
-    if len(doses) == 1:
-        body = strings.t("clarify", lang, medicine=doses[0].medicine_label)
-    elif len(doses) > 1:
-        names = " ya ".join(d.medicine_label for d in doses[:3])
-        body = strings.t("clarify", lang, medicine=names)
-    else:
-        body = strings.t("clarify_generic", lang)
+    # Spend the key pool on a better-worded question before settling for the
+    # canned one - "samajh nahi aaya" every time reads like a broken machine.
+    body = await _clarify_text(intent, lang, doses)
+
+    if body is None:
+        if len(doses) == 1:
+            body = strings.t("clarify", lang, medicine=doses[0].medicine_label)
+        elif len(doses) > 1:
+            names = " ya ".join(d.medicine_label for d in doses[:3])
+            body = strings.t("clarify", lang, medicine=names)
+        else:
+            body = strings.t("clarify_generic", lang)
 
     await _send_checked(patient, body, intent=intent, caretakers=caretakers,
                         known_texts=known)

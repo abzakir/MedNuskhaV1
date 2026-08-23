@@ -87,6 +87,57 @@ Return ONLY JSON: {"kind": str, "patient": str|null, "confidence": float}
 """
 
 
+#: Used only when the message fitted no command. The model may word the reply
+#: back, but it still may not answer anything - it points at the four commands.
+_UNCLEAR_SYSTEM = """You are MedNuskha, a medicine reminder service, replying to
+the CARETAKER of an elderly patient. Their message did not match any command.
+
+The only things you can do are: "status" (today's doses), "pause" (stop
+reminders), "resume" (start them again), "help". Adding or editing a medicine
+happens on the website, never here.
+
+Hard rules:
+- At most two short sentences.
+- {register}
+- Say you did not understand, then name the command that most likely fits what
+  they asked. If nothing fits, tell them to send "help".
+- Answer NOTHING medical - not what a medicine does, not whether to take,
+  change or stop one, not what a symptom means.
+- Invent no facts about the patient. You do not know how they are doing unless
+  they ask for "status".
+- No greeting, no sign-off, no emoji. Output the reply only."""
+
+_REGISTER = {
+    "ur": "Write in Roman Urdu (Urdu written in English letters), like: "
+          "\"Maaf kijiye ga, samajh nahi aaya. 'status' likhein.\"",
+    "en": "Write in plain English.",
+}
+
+
+async def _unclear_text(text: str, lang: str, patients: list[dict]) -> str | None:
+    """Let the model word the 'did not understand' reply. None if it cannot.
+
+    `care_unclear` is always ready behind this. The model chooses words, never
+    actions - the command dispatch above has already decided nothing matched.
+    """
+    names = ", ".join(p["name"] for p in patients[:5]) or "none"
+    register = _REGISTER.get(lang) or _REGISTER["ur"]
+
+    draft = await llm.try_chat([
+        {"role": "system", "content": _UNCLEAR_SYSTEM.format(register=register)},
+        {"role": "user",
+         "content": f"Patients in their care: {names}.\n"
+                    f"They said: {(text or '').strip()[:200]!r}"},
+    ])
+    if draft is None:
+        return None
+
+    # Model prose reaching a human still gets checked, exactly as the patient
+    # side does. A blocked draft falls back to the canned string.
+    result = guardrails.check(draft)
+    return None if result.alert_caretaker else result.message
+
+
 def _fast_kind(text: str) -> str | None:
     clean = (text or "").strip()
     if not clean:
@@ -273,4 +324,10 @@ async def handle(text: str, caretaker: dict) -> None:
         await say("care_resumed", patient=patient["name"])
         return
 
+    # Nothing matched. Spend the key pool on a reply that at least points them
+    # somewhere useful before falling back to the fixed one.
+    worded = await _unclear_text(text, lang, patients)
+    if worded:
+        await wa.send_text(phone, worded)
+        return
     await say("care_unclear")

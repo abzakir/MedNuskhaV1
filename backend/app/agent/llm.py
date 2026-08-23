@@ -277,6 +277,35 @@ async def chat_json(
         raise LLMError(f"model did not return JSON: {raw[:300]}")
 
 
+async def try_chat(
+    messages: list[dict[str, str]],
+    *,
+    temperature: float = 0.3,
+    max_tokens: int = 120,
+    timeout: float = 20.0,
+) -> str | None:
+    """chat() that returns None instead of raising, for optional wording.
+
+    The reply paths use this where a canned string already exists as a
+    fallback: it is worth spending the whole key pool on a warmer, more
+    specific sentence, but never worth losing the reply altogether. Callers
+    MUST have a fallback ready, and MUST still put the result through
+    guardrails - this returns model prose, not a vetted message.
+    """
+    try:
+        text = await chat(messages, temperature=temperature,
+                          max_tokens=max_tokens, timeout=timeout)
+    except AllKeysExhausted as exc:
+        log.warning("no key free to word this reply, using the canned one: %s", exc)
+        return None
+    except Exception as exc:  # noqa: BLE001 - a canned reply beats no reply
+        log.error("wording call failed, using the canned reply: %s", exc)
+        return None
+
+    cleaned = " ".join((text or "").split())
+    return cleaned or None
+
+
 async def transcribe(audio: bytes, filename: str = "voice.ogg",
                      language: str = "ur") -> str:
     """Transcribe audio with Groq's whisper-large-v3, rotating keys.
