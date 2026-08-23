@@ -82,6 +82,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <NavLink href="/dashboard" active={pathname === "/dashboard"}>
               Patients
             </NavLink>
+            <NavLink
+              href="/dashboard/profile"
+              active={pathname === "/dashboard/profile"}
+            >
+              My details
+            </NavLink>
           </nav>
 
           <div className="ml-auto flex items-center gap-3">
