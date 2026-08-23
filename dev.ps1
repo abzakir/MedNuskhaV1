@@ -45,6 +45,17 @@ if ([string]::IsNullOrWhiteSpace($secret)) {
     $webhookUrl = "http://127.0.0.1:8000/webhook/$secret"
 }
 
+# `next build` and `next dev` share the .next folder and write incompatible
+# things into it. If a production build was run while dev was up, the dev
+# server dies with "Cannot find module ./vendor-chunks/...". BUILD_ID only
+# exists after `next build`, so it is a precise signal that the cache is the
+# wrong shape for dev.
+$buildId = Join-Path $root "frontend\.next\BUILD_ID"
+if (Test-Path $buildId) {
+    Write-Host "  clearing a leftover production build from .next" -ForegroundColor DarkGray
+    Remove-Item -Recurse -Force (Join-Path $root "frontend\.next") -ErrorAction SilentlyContinue
+}
+
 # Anything still listening from a previous run has to go, or the new process
 # silently fails to bind and you debug the wrong thing.
 foreach ($port in 3001, 8000, 3000) {

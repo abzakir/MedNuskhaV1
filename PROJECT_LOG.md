@@ -210,6 +210,13 @@ Phase 8, where a CRLF Makefile breaks.
   expired** and raises `DetachedInstanceError` on attribute access. Call
   `refresh()` immediately before `expunge()`.
 
+- **Never run `npm run build` while `npm run dev` is running.** They share
+  `frontend/.next` and write incompatible layouts into it. The dev server then
+  fails with `Cannot find module './vendor-chunks/@supabase.js'`, which reads
+  like a missing dependency and is not. Fix: stop dev, `rm -rf frontend/.next`,
+  start dev. `dev.ps1` now detects a leftover production build (`.next/BUILD_ID`
+  only exists after `next build`) and clears it automatically.
+
 ## Decisions log
 
 ### 2026-08-23 — Session 6 (Phase 3: the agent)
