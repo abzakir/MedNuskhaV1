@@ -40,14 +40,15 @@ scheduler, WhatsApp connection and how many AI keys are alive.
 | 5 | Voice notes attached to reminders | done - 32/32 + 25 unit tests |
 | 6 | The two PDF reports | done — 58/58 + 20/20 over HTTP + 25 unit tests |
 | 7 | Prescription OCR (stretch) | not built |
-| 8 | Deploy to ECS + Vercel | not built |
+| 8 | Deploy: Dockerfiles, README, seed | prepared - the deploy itself is the team's |
 
 Voice now works in both directions. An inbound voice note is transcribed and
 acted on; every reminder carries a pre-generated Urdu voice note, and a patient
 who replies by voice is answered by voice.
 
-**All eight core phases are built.** What remains is deployment (Phase 8) and
-the OCR stretch (Phase 7).
+**Every core phase is built.** Phase 8's buildable half is done too — images,
+compose file, README and `make seed`. What remains is the deploy itself, which
+§14 assigns to the team, and the OCR stretch (Phase 7).
 
 ### Test inventory
 
@@ -79,39 +80,43 @@ scripts/verify/                          ~310 integration checks, live services
 - **Baileys is a release candidate** (7.0.0-rc14). Deliberate: 6.17.16 cannot
   resolve LID senders, which means it cannot tell who replied.
 - **`DEV_AUTH_BYPASS=true`** in the local `.env`. It must be false in production.
-- **A demo patient is sitting in the database** — "Zubaida Bibi (demo)" on
-  920000000197, with a full 14 days of history, seeded so the dashboard report
-  buttons have something real to render. Delete it when you are done:
-  `backend\.venv\Scripts\python.exe scripts\verify\purge_patient.py 920000000197`
+- **A demo patient is sitting in the database** — "Zubaida Bibi [demo]" on
+  920000000001: three medicines, 14 days of history, two symptoms. It is
+  attached to whichever caretaker signed in most recently. `make seed` rebuilds
+  it and `python scripts/seed_demo.py --purge-only` removes it. The number is
+  in a reserved test range, so nothing reaches a real phone.
+- **Neither Dockerfile has been built.** Docker is not installed on the dev
+  machine. The code uses no 3.12+ syntax or stdlib, so `python:3.11-slim`
+  should be right, but the first `docker compose up --build` is unproven —
+  budget time for it rather than discovering it on demo day.
 
 ---
 
 ## Current phase
 
-**Every core phase (0-6) is built and verified.** Phases 5 and 6 both landed
-this session. What is left is deployment and rehearsal, plus two things only a
-human can do: hear the voice, and click the buttons.
+**Every phase Claude can do is done.** Phases 5, 6 and the buildable half of 8
+landed across the last two sessions. What remains is either the team's by
+design (provisioning, deploying, pairing) or needs a human's eyes and ears.
 
 ## Next steps
 
 1. **Listen to a voice note, and click the two report buttons.** These are the
    only "Done when" items no session has been able to tick. The audio is in
-   `backend/.voice-cache/` (two files for "Zubaida Bibi (demo)", morning and
-   evening), and the dashboard buttons need a Supabase sign-in, which no
-   session will do on your behalf. §14 asks you to judge the voice by ear
-   before the demo — the round-trip transcription proves it says the right
-   words, not that it sounds right.
-2. **Send a real reminder to a real phone and confirm the voice note plays**
+   `backend/.voice-cache/` (five files for the demo patient), and the dashboard
+   buttons need a Supabase sign-in, which no session will do on anyone's
+   behalf. §14 asks you to judge the voice by ear — the round-trip
+   transcription proves it says the right words, not that it sounds right.
+2. **Send a real reminder to a real phone** and confirm the voice note renders
    with a play button rather than as a file attachment (invariant 7). Every
    test so far captured the send instead of transmitting it.
+   `python scripts/seed_demo.py --phone <your number>` sets that up.
 3. **Add `SUPABASE_SERVICE_KEY` to `.env`** (Project Settings → API keys → the
-   `sb_secret_` one). Both features work without it, but nothing survives a
-   redeploy. Do this before Phase 8, not during.
-4. **Phase 8 — deploy.** ECS for the backend and bridge, Vercel for the
-   dashboard. Nothing in the stack needs system packages any more — no GTK for
-   PDFs, no ffmpeg for audio. Set `DEV_AUTH_BYPASS=false`, and set
-   `NEXT_PUBLIC_API_BASE` to the real host or every report share link sent over
-   WhatsApp will point at `localhost:8000`.
+   `sb_secret_` one). Everything works without it, but nothing survives a
+   redeploy. Do this before deploying, not during.
+4. **Deploy — the part §14 says is yours.** `docker compose up -d --build`
+   brings up the backend and bridge; `vercel --prod` from `frontend/` does the
+   dashboard. The README has the full sequence including the QR pairing and the
+   three settings that must change. Neither image has been built yet.
 5. **Phase 9 — rehearse the demo script** in §15, end to end, on the real
    phone.
 6. Phase 7 (prescription OCR) is the stretch and should only be attempted if
@@ -198,6 +203,17 @@ push at the end of every phase**, one commit per phase, `feat(scope): ...` per
   2026-08-23: it lists buckets fine, but both bucket creation and upload come
   back `new row violates row-level security policy`. Uploading needs the
   `sb_secret_` key. This applies to Phase 5's voice notes too.
+- **The running ticker races anything that bulk-inserts doses.**
+  `materialise_doses` creates rows for every ACTIVE schedule once a minute, so
+  a script that creates a schedule and then inserts its own doses will lose to
+  it and die on `uq_dose_event_idempotency_key`. Create the schedule
+  `active=False`, insert, then activate - which is what `seed_demo.py` does.
+- **Supabase's free-tier pooler drops a connection during anything long.**
+  A `make seed` that spends two minutes synthesising voice notes came back to
+  `server closed the connection unexpectedly` on the next UPDATE. `db.py`
+  already sets `pool_pre_ping=True`, which is what makes the retry work; do not
+  remove it, and keep long network work out of an open session.
+
 - **`dev.ps1` runs uvicorn without `--reload`.** A backend started before a
   code change silently 404s on new routes, which looks exactly like a routing
   bug. Restart it, or run a second instance on another port to test against.
@@ -359,6 +375,62 @@ push at the end of every phase**, one commit per phase, `feat(scope): ...` per
   `reactionMessage`, `pollUpdateMessage` and `keepInChatMessage`.
 
 ## Decisions log
+
+### 2026-08-24 — Session 10 (Phase 8: the parts that are not the deploy)
+
+**Done:** `Dockerfile` for the backend, `whatsapp-bridge/Dockerfile`,
+`docker-compose.yml`, a real `README.md` with an architecture diagram, and
+`scripts/seed_demo.py`. §14 is explicit that the provisioning and deploying are
+the team's, not Claude's, so this is everything up to the point where someone
+has to log into Alibaba Cloud.
+
+**A race the seed script found:** inserting dose rows for a freshly created
+schedule collides with the running ticker, which materialises doses for every
+**active** schedule once a minute. The second `make seed` died on
+`uq_dose_event_idempotency_key` for a dose the ticker had created in the gap.
+Schedules are now created `active=False` and switched on once every row is in
+place - `materialise_doses` filters on `Schedule.active`, so an inactive
+schedule is invisible to it. Worth knowing for anything else that bulk-inserts
+doses.
+
+**Key decisions:**
+
+- **The seed attaches to the caretaker who signed in most recently**, rather
+  than creating its own. The dashboard only ever shows one family's data, so a
+  demo under a caretaker nobody signs in as is a demo nobody can see.
+  `--email` overrides it.
+- **The default patient number is in a reserved test range**, and `--phone`
+  is what makes a demo live. A seed script that starts messaging a real phone
+  the moment someone runs it is a bad default.
+- **Three medicines with three different stories** - one steady, one perfect,
+  one where the evening dose is the problem. A demo needs a shape the presenter
+  can talk over, and it exercises every branch of both reports: the caretaker
+  PDF's "hardest time of day" only says something interesting if one exists.
+- **Seeded symptoms are deliberately not linked to a dose.** The system does
+  not know which medicine a symptom relates to and invariant 8 forbids it
+  guessing. Unlinked is the truthful record, and it also means the urgent one
+  shows on whichever report gets opened rather than on whichever medicine
+  happened to share the 08:00 slot.
+- **Doses in the future are left SCHEDULED**, not backdated. Backdating a dose
+  that has not happened is the one thing that would make the dashboard lie.
+- **One uvicorn worker in the container.** A Postgres advisory lock already
+  stops a second process running the ticker, so extra workers would serve
+  requests but sit idle on the schedule - and the lock warning reads like a bug
+  to whoever finds it next.
+- **`make bridge` existed in `.PHONY` but had no rule**, while this log and the
+  README both told people to run it. Added.
+- **`ALLOWED_NUMBERS` was undocumented**, and empty means *no restriction* -
+  the bridge will message anyone it is asked to. Now in `.env.example` with
+  that stated plainly, and in the README's pre-deploy list.
+
+**Not done:** neither image has been built - Docker is not installed here. The
+code has no 3.12+ syntax or stdlib, so `python:3.11-slim` should be right, but
+that first build is unproven.
+
+**Before touching this area next:** the Dockerfiles have no `apt install` line
+and that is load-bearing, not an oversight. Dropping WeasyPrint removed GTK and
+Pango; PyAV bundles FFmpeg in its wheel. If a system package looks necessary,
+check whether a dependency changed first.
 
 ### 2026-08-24 — Session 9 (Phase 5: the voice notes)
 

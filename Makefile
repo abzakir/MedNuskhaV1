@@ -33,11 +33,17 @@ backend:
 frontend:
 	cd frontend && npm run dev
 
+# The bridge alone, in the foreground - which is what you want on a first run,
+# because the QR code to pair WhatsApp is printed to stdout.
+bridge:
+	cd whatsapp-bridge && npm install --omit=dev && npm start
+
 test:
 	cd backend && ../$(VENV_BIN)/pytest -q
 
+# make seed ARGS="--help" for the options; --purge-only removes the demo again.
 seed:
-	$(VENV_BIN)/python scripts/seed_demo.py
+	$(VENV_BIN)/python scripts/seed_demo.py $(ARGS)
 
 clean:
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +

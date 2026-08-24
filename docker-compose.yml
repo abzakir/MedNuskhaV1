@@ -1,0 +1,65 @@
+# The two server-side processes. The dashboard is not here - it deploys to
+# Vercel (AGENTS.md section 6), and Postgres is hosted Supabase.
+#
+#   docker compose up -d --build
+#   docker compose logs -f bridge     # watch for the QR code on first run
+#
+# First run only: the bridge has no WhatsApp session yet and prints a QR code
+# to pair with. Scan it from the phone that owns the number, and the session
+# is written to the whatsapp-auth volume. Every later start reuses it.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Inside the compose network the bridge is reachable by service name,
+      # whatever BRIDGE_URL says in .env for local development.
+      BRIDGE_URL: http://bridge:3001
+      VOICE_CACHE_DIR: /app/.voice-cache
+      # Section 4.1's dev bypass treats any unauthenticated request as a fixed
+      # caretaker. It must never be true on a public host.
+      DEV_AUTH_BYPASS: "false"
+    ports:
+      - "8000:8000"
+    volumes:
+      # Without these two, every deploy re-synthesises the voice notes and
+      # re-downloads the Whisper model. Neither is fatal - both regenerate -
+      # but the first reminder and the first inbound voice note pay for it.
+      - voice-cache:/app/.voice-cache
+      - whisper-cache:/app/.cache/huggingface
+    depends_on:
+      - bridge
+
+  bridge:
+    build:
+      context: ./whatsapp-bridge
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      BRIDGE_PORT: "3001"
+      # The secret is what stops anyone who guesses the URL posting a fake
+      # "she took her medicine" - the endpoint is public and Baileys has no
+      # equivalent of Meta's verify handshake (PROJECT_LOG.md, Session 5).
+      BACKEND_WEBHOOK_URL: http://backend:8000/webhook/${WEBHOOK_SECRET}
+      ALLOWED_NUMBERS: ${ALLOWED_NUMBERS:-}
+      AUTH_DIR: /srv/auth_info
+    # The QR code on first pairing is printed to stdout and needs a TTY to
+    # render as a scannable block.
+    tty: true
+    ports:
+      # Loopback only. Nothing outside the host has any business reaching the
+      # bridge directly - it will send a WhatsApp message to anyone who asks.
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - whatsapp-auth:/srv/auth_info
+
+volumes:
+  # A real WhatsApp login. Losing it means re-pairing by QR, which cannot be
+  # done unattended - back it up before touching this stack.
+  whatsapp-auth:
+  voice-cache:
+  whisper-cache:
