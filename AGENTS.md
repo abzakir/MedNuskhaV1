@@ -293,7 +293,9 @@ mednuskha/
 │   │   ├── vision/ocr.py     # Phase 7 stretch
 │   │   ├── voice/
 │   │   │   ├── asr.py        # faster-whisper wrapper
-│   │   │   └── tts.py        # Google Cloud TTS wrapper, pre-generates
+│   │   │   ├── tts.py        # edge-tts wrapper, pre-generates
+│   │   │   └── store.py      # where the voice notes live
+│   │   ├── storage.py        # Supabase Storage, shared by reports + voice
 │   │   ├── reports/doctor_pdf.py
 │   │   └── api/routes.py     # REST for the dashboard
 │   └── tests/

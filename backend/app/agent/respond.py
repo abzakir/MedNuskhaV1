@@ -21,6 +21,7 @@ from sqlmodel import col, select
 
 from app.agent import guardrails, knowledge, llm
 from app.agent.interpret import Intent
+from app.config import settings
 from app.db import session_scope
 from app.i18n import strings
 from app.models import (Caretaker, DoseEvent, Medicine, Patient, Schedule,
@@ -146,6 +147,44 @@ async def _send_checked(patient, draft: str, *, intent: Intent | None = None,
         )
 
 
+async def _speak_back(patient, intent, key: str, **values) -> bool:
+    """Answer a voice note with a voice note. Phase 5.
+
+    Reply in the modality they used: someone who sends a voice message is
+    often someone who finds reading hard, and a text-only answer is the wrong
+    shape of reply for them. Someone who typed gets text, because a surprise
+    audio clip is noise.
+
+    Only `strings.SPOKEN` templates are ever spoken, filled with values this
+    module controls. Nothing free-text from the database goes through here -
+    the voice silently drops Roman Urdu words, and a reply that loses one is
+    worse than a reply they have to read. See strings.SPOKEN for the measurement.
+    """
+    if not settings.voice_notes_enabled:
+        return False
+    if not getattr(intent, "from_voice", False):
+        return False
+
+    line = strings.spoken(key, **values)
+    if not line:
+        return False
+
+    try:
+        from app.voice import store, tts
+
+        cached = await tts.ensure_cached(line)
+        if cached is None:
+            return False
+        audio = await asyncio.to_thread(store.get, cached)
+        if not audio:
+            return False
+        await wa.send_voice(patient.whatsapp_number, audio)
+        return True
+    except Exception as exc:  # noqa: BLE001 - they already have the text
+        log.warning("spoken reply not sent to %s: %s", patient.id, exc)
+        return False
+
+
 async def _alert_caretakers(caretakers: list[dict], *, reason: str,
                             patient, words: str) -> None:
     """Tell the caretakers something needs a human."""
@@ -210,6 +249,7 @@ async def _on_taken(intent, patient, lang, caretakers, primary, known) -> None:
     body = strings.t(key, lang, name=patient.name, medicine=label)
     await _send_checked(patient, body, intent=intent, caretakers=caretakers,
                         known_texts=known)
+    await _speak_back(patient, intent, key, medicine=label)
 
     if landed == "TAKEN_LATE":
         from app.scheduler.ticker import notify_late_resolution

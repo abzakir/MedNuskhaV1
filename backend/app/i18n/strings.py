@@ -236,6 +236,83 @@ STRINGS: dict[str, dict[str, str]] = {
 }
 
 
+# --------------------------------------------------------------------------
+# spoken copy (Phase 5)
+# --------------------------------------------------------------------------
+
+#: What the voice note SAYS, as opposed to what the message shows.
+#:
+#: This is not a third language - it is the same Urdu in the script the
+#: text-to-speech voice can actually read. Measured 2026-08-23 by synthesising
+#: both and transcribing them back: given the Roman Urdu above,
+#: `ur-PK-UzmaNeural` drops the patient's name entirely and turns "waqt hai"
+#: into "ہائی". Given the same sentence in Urdu script it round-trips almost
+#: word for word.
+#:
+#: Two rules for anything added here:
+#:
+#: 1. **Do not lead with {name}.** A Latin name at the start of an Urdu
+#:    sentence is swallowed by the voice. The text message carries the name;
+#:    the voice note carries the instruction. Leading with "Ji" is still
+#:    respectful Urdu on its own.
+#: 2. **Leave the medicine name exactly as stored.** "Panadol 500mg" is spoken
+#:    correctly as "پینادال پانچ سو ملی گرام" - and transliterating a drug
+#:    name ourselves would be inventing a spelling for a medicine, which is
+#:    the one kind of guess this product never makes.
+#: 3. **Nothing from the database is ever spoken.** Only a template from this
+#:    dict, filled with values we control - the hour and the medicine label.
+#:    Measured the same day: given the confirmed purpose exactly as stored,
+#:    "Panadol 500mg bukhar aur dard ke liye hai", the voice DROPS "bukhar"
+#:    and says only "...aur dard ke liye". A voice note that silently omits
+#:    what a medicine treats is worse than no voice note, so a reply carrying
+#:    free text goes out as text alone. `medicine_info` is deliberately absent
+#:    below for that reason - see PROJECT_LOG.md.
+#: Urdu says the part of day before the hour, and without it the eight
+#: o'clock reminder is the same sentence morning and night - the clock face
+#: the patient cannot see is what disambiguates it in the text message.
+#: 24-hour start of each period, latest first.
+SPOKEN_PERIODS: tuple[tuple[int, str], ...] = (
+    (19, "رات"),        # raat - night
+    (16, "شام"),        # shaam - evening
+    (12, "دوپہر"),      # dopeher - afternoon
+    (4, "صبح"),         # subah - morning
+    (0, "رات"),         # after midnight is still raat
+)
+
+
+def period_word(hour24: int) -> str:
+    """The Urdu part-of-day word for a 24-hour hour."""
+    for start, word in SPOKEN_PERIODS:
+        if hour24 >= start:
+            return word
+    return "صبح"
+
+
+SPOKEN: dict[str, str] = {
+    "dose_reminder": "جی، {period} کے {hour} بج گئے۔ {medicine} لینے کا وقت ہے۔",
+    "dose_followup": "جی، صرف یاد دلا رہے ہیں۔ {medicine} ابھی باقی ہے۔",
+    "dose_taken_ack": "شکریہ۔ {medicine} لے لی، لکھ لیا ہے۔",
+    "dose_late_ack": "شکریہ۔ {medicine} لے لی، لکھ لیا ہے۔",
+}
+
+
+def spoken(key: str, **kwargs) -> str | None:
+    """The Urdu-script line for a voice note, or None if there is not one.
+
+    Returns None rather than raising: a message with no spoken form is sent
+    as text alone, which is the normal case for most of STRINGS.
+    """
+    template = SPOKEN.get(key)
+    if template is None:
+        return None
+    try:
+        rendered = template.format(**kwargs)
+    except KeyError as missing:
+        log.warning("spoken string %r is missing placeholder %s", key, missing)
+        rendered = template.format_map(_Blank(kwargs))
+    return " ".join(rendered.split()) or None
+
+
 def t(key: str, lang: str = DEFAULT_LANGUAGE, **kwargs) -> str:
     """Look up a string in the patient's language and fill in its placeholders.
 

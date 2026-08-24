@@ -255,8 +255,35 @@ async def send_reminder(dose_id: str) -> bool:
         log.error("dose %s: reminder send FAILED: %s", dose_id, exc)
         return False
 
+    await _attach_voice_note(dose_id, ctx["patient_number"])
+
     await asyncio.to_thread(sm.mark_awaiting_reply, dose_id)
     return True
+
+
+async def _attach_voice_note(dose_id: str, to: str) -> bool:
+    """Send the pre-generated voice note that goes with a reminder.
+
+    Reads only - section 3.4 forbids synthesising here, and the ticker runs
+    every minute. A dose with no cached audio simply goes out as text, which
+    is what happens for anything scheduled before Phase 5 landed.
+
+    Sent AFTER the text on purpose: the words are on screen while the voice
+    plays, and if the audio send fails the patient has already been reminded.
+    """
+    if not settings.voice_notes_enabled:
+        return False
+    try:
+        from app.voice import tts
+
+        audio = await asyncio.to_thread(tts.audio_for, dose_id)
+        if not audio:
+            return False
+        await wa.send_voice(to, audio)
+        return True
+    except Exception as exc:  # noqa: BLE001 - the reminder itself already went
+        log.warning("dose %s: voice note not sent (%s)", dose_id, exc)
+        return False
 
 
 async def send_followup(dose_id: str) -> bool:
@@ -283,7 +310,46 @@ async def send_followup(dose_id: str) -> bool:
     except Exception as exc:  # noqa: BLE001
         log.error("dose %s: follow-up send FAILED: %s", dose_id, exc)
         return False
+
+    # The follow-up says something different from the reminder, so it needs
+    # its own line - but it is still read from the cache, never synthesised.
+    await _attach_followup_voice(dose_id, ctx)
     return True
+
+
+async def _attach_followup_voice(dose_id: str, ctx: dict) -> bool:
+    """The gentler second line, if it happens to be cached already.
+
+    Pre-generation covers reminders. A follow-up only reaches a patient who
+    has not answered, so its audio is generated the first time that happens
+    for a given medicine and then reused - off the reminder path, in a dose
+    that has already been sent.
+    """
+    if not settings.voice_notes_enabled:
+        return False
+    try:
+        from app.i18n import strings as _s
+        from app.voice import store, tts
+
+        line = _s.spoken("dose_followup", medicine=ctx["medicine_label"])
+        if not line:
+            return False
+
+        key = store.key_for(line)
+        audio = await asyncio.to_thread(store.get, key)
+        if audio is None:
+            # Not on the reminder path: this dose was reminded 15 minutes ago.
+            if await tts.ensure_cached(line) is None:
+                return False
+            audio = await asyncio.to_thread(store.get, key)
+        if not audio:
+            return False
+
+        await wa.send_voice(ctx["patient_number"], audio)
+        return True
+    except Exception as exc:  # noqa: BLE001 - the follow-up text already went
+        log.warning("dose %s: follow-up voice not sent (%s)", dose_id, exc)
+        return False
 
 
 async def escalate(dose_id: str) -> bool:

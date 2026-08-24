@@ -39,6 +39,7 @@ Set `PYTHONIOENCODING=utf-8` first if Urdu output makes your console throw a
 | `verify_caretaker.py` | Caretaker commands over WhatsApp, and that a clinical question is still refused | database + Groq |
 | `verify_reports.py` | Both PDFs off a seeded 14-day course, the numbers in them, verbatim Urdu on the page, and the daily course-end job firing exactly once | database |
 | `verify_report_api.py` | The two dashboard buttons and the unauthenticated WhatsApp share link, over real HTTP | database + backend running |
+| `verify_voice.py` | Urdu voice notes: OGG/Opus mono, what they actually say (transcribed back), one file per unique sentence, and that the reminder path attaches rather than synthesises | database + network |
 | `verify_keyring.py` | API-key rotation, cooldowns, dead keys, exhaustion errors | none |
 | `check_clinical.py` | The dose-change detector, including the phrasings a caretaker uses | none |
 

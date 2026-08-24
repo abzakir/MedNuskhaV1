@@ -45,3 +45,6 @@ Thumbs.db
 
 # Generated report PDFs from scripts/verify/verify_reports.py
 scripts/verify/_out/
+
+# Pre-generated voice notes. Content-addressed, regenerates itself.
+backend/.voice-cache/

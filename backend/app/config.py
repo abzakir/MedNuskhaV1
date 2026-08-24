@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     #: comes back as "ab hi" (right now). Measured, see PROJECT_LOG.md.
     whisper_model: str = "small"
 
+    #: Where pre-generated voice notes are kept. Local disk is the primary
+    #: store, not a cache in front of Supabase: the ticker reads it at the
+    #: moment a dose is due, and section 3.4 forbids synthesising there.
+    voice_cache_dir: str = "backend/.voice-cache"
+    #: Attach a voice note to reminders and follow-ups. Off switches the
+    #: product back to text-only without touching any code - which is what
+    #: section 14's Phase 5 kill switch asks for.
+    voice_notes_enabled: bool = True
+
     # --- Data ---
     database_url: str = ""
     supabase_url: str = ""

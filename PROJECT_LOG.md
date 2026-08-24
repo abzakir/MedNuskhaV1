@@ -37,33 +37,42 @@ scheduler, WhatsApp connection and how many AI keys are alive.
 | 3 | Agent: understand replies, guardrails | done — 38/38 + 57 unit tests |
 | 4 | Website: sign-up, patients, medicines | done — 42/42 |
 | — | Caretaker commands over WhatsApp | done — 11/11 (added at team request) |
-| 5 | Voice notes attached to reminders | **not built** |
+| 5 | Voice notes attached to reminders | done - 32/32 + 25 unit tests |
 | 6 | The two PDF reports | done — 58/58 + 20/20 over HTTP + 25 unit tests |
 | 7 | Prescription OCR (stretch) | not built |
 | 8 | Deploy to ECS + Vercel | not built |
 
-Voice **understanding** already works — an inbound voice note is transcribed
-and acted on. What is missing from Phase 5 is the outbound half: pre-generating
-an Urdu voice note and attaching it to each reminder. The TTS pipeline itself is
-proven (see the decisions log); it is not yet wired into the reminder path.
+Voice now works in both directions. An inbound voice note is transcribed and
+acted on; every reminder carries a pre-generated Urdu voice note, and a patient
+who replies by voice is answered by voice.
+
+**All eight core phases are built.** What remains is deployment (Phase 8) and
+the OCR stretch (Phase 7).
 
 ### Test inventory
 
 ```
-pytest backend/tests/                    82 unit tests, no services needed
-scripts/verify/                          ~280 integration checks, live services
+pytest backend/tests/                    107 unit tests, no services needed
+scripts/verify/                          ~310 integration checks, live services
 ```
 
 `scripts/verify/README.md` says what each one proves and how to run it.
 
 ### Known gaps
 
-- **No voice note on reminders yet** (Phase 5). Everything else in the core
-  product is built.
-- **`SUPABASE_SERVICE_KEY` is not set**, so reports are generated and served
-  but **not archived** to Supabase Storage. Nothing is broken by this — the
-  share link rebuilds the PDF from the database — but Phase 5's voice notes
-  will need the same key, so it is worth adding. See `.env.example`.
+- **`SUPABASE_SERVICE_KEY` is not set**, so nothing is archived to Supabase
+  Storage. Neither feature is broken by it — a report is rebuilt from the
+  database on each open, and voice notes live on local disk — but **voice
+  notes are then regenerated after every deploy**, and on a fresh ECS box the
+  first reminder of each medicine goes out as text until pre-generation
+  catches up. Worth setting before Phase 8. See `.env.example`.
+- **A spoken reply is not given for a medicine question**, which is the third
+  bullet of Phase 5's "Done when". Measured, not skipped: the confirmed
+  purpose is stored in Roman Urdu ("bukhar aur dard ke liye") and the Urdu
+  voice **drops "bukhar" outright**. A voice note that omits what a medicine
+  treats is worse than none, so only copy written in Urdu script is ever
+  spoken. The fix is data, not code — a purpose typed in Urdu script would
+  speak correctly today.
 - **Buttons do not exist.** WhatsApp removed them for non-official clients, so
   reply options are numbered text. Invariant 2's replacement is documented in
   the decisions log and pinned by `test_state_machine.py`.
@@ -79,35 +88,34 @@ scripts/verify/                          ~280 integration checks, live services
 
 ## Current phase
 
-**Phase 5 (voice notes on reminders) is the only piece of the core product
-left.** Phase 6 landed this session. Nothing external is blocking Phase 5 —
-every account and key is in place, except the Supabase secret key it shares
-with report archiving.
+**Every core phase (0-6) is built and verified.** Phases 5 and 6 both landed
+this session. What is left is deployment and rehearsal, plus two things only a
+human can do: hear the voice, and click the buttons.
 
 ## Next steps
 
-1. **Click the two report buttons on the dashboard yourself.** Everything below
-   them is verified — the endpoint they call is 20/20 over real HTTP — but the
-   click itself was never performed, because the dashboard needs a Supabase
-   sign-in and this session would not sign in on anyone's behalf. Open
-   "Zubaida Bibi (demo)", which has 14 days of history waiting.
-2. **Add `SUPABASE_SERVICE_KEY` to `.env`** (Project Settings → API keys → the
-   `sb_secret_` one). Reports work without it; they are just rebuilt on each
-   open rather than archived. Phase 5 needs the same key to upload voice notes,
-   so this unblocks both. `verify_reports.py` reports it as a warning until it
-   is set.
-3. **Phase 5 — outbound voice.** Pre-generate one OGG/Opus file per unique dose
-   text when a schedule is confirmed, store it in Supabase Storage, attach it to
-   the reminder. Never synthesise in the reminder path. Caching by
-   `(medicine, dose_time)` matters — one file per unique sentence, not per dose.
-   `reports/storage.py` already has the upload/bucket plumbing to copy.
+1. **Listen to a voice note, and click the two report buttons.** These are the
+   only "Done when" items no session has been able to tick. The audio is in
+   `backend/.voice-cache/` (two files for "Zubaida Bibi (demo)", morning and
+   evening), and the dashboard buttons need a Supabase sign-in, which no
+   session will do on your behalf. §14 asks you to judge the voice by ear
+   before the demo — the round-trip transcription proves it says the right
+   words, not that it sounds right.
+2. **Send a real reminder to a real phone and confirm the voice note plays**
+   with a play button rather than as a file attachment (invariant 7). Every
+   test so far captured the send instead of transmitting it.
+3. **Add `SUPABASE_SERVICE_KEY` to `.env`** (Project Settings → API keys → the
+   `sb_secret_` one). Both features work without it, but nothing survives a
+   redeploy. Do this before Phase 8, not during.
 4. **Phase 8 — deploy.** ECS for the backend and bridge, Vercel for the
-   dashboard. The PDF stack no longer needs system packages — that was the
-   point of dropping WeasyPrint. Set `DEV_AUTH_BYPASS=false`, and set
+   dashboard. Nothing in the stack needs system packages any more — no GTK for
+   PDFs, no ffmpeg for audio. Set `DEV_AUTH_BYPASS=false`, and set
    `NEXT_PUBLIC_API_BASE` to the real host or every report share link sent over
    WhatsApp will point at `localhost:8000`.
-5. Phase 7 (prescription OCR) is the stretch and should only be attempted if
-   1–4 are finished.
+5. **Phase 9 — rehearse the demo script** in §15, end to end, on the real
+   phone.
+6. Phase 7 (prescription OCR) is the stretch and should only be attempted if
+   1-5 are finished.
 
 ---
 
@@ -193,6 +201,36 @@ push at the end of every phase**, one commit per phase, `feat(scope): ...` per
 - **`dev.ps1` runs uvicorn without `--reload`.** A backend started before a
   code change silently 404s on new routes, which looks exactly like a routing
   bug. Restart it, or run a second instance on another port to test against.
+
+- **`ur-PK-UzmaNeural` cannot read Roman Urdu, and fails silently.** Measured
+  2026-08-23 by synthesising and transcribing back. Given the reminder copy as
+  written for the text message - "Zubaida ji, 8 baj gaye - Panadol 500mg lene
+  ka waqt hai" - it **drops the patient's name entirely** and renders "waqt
+  hai" as "ہائی". The same sentence in Urdu script round-trips almost word for
+  word. This is why `i18n/strings.SPOKEN` exists as a separate dict: the voice
+  note is not a reading of the message, it is its own copy.
+  - A **Latin medicine name inside an Urdu sentence is fine** - "Panadol
+    500mg" comes back as "پینادال پانچ سو ملی گرام". Digits are fine too.
+    A **Latin name at the start** is not: it is swallowed. Do not lead a
+    spoken line with `{name}`.
+  - **Roman Urdu words inside an Urdu sentence lose content.** The stored
+    purpose "bukhar aur dard ke liye" speaks as "...aur dard ke liye" -
+    *bukhar* (fever) simply gone. Nothing free-text from the database is
+    spoken for exactly this reason.
+- **`edge_tts` raises `NoAudioReceived` rather than returning empty** when the
+  voice has nothing it can say - a bare Latin word, for instance. Uncaught in
+  a background task it takes the whole pre-generation run down, so
+  `tts.synthesise` converts it to `SynthesisFailed` and callers fall back to
+  text.
+- **Urdu says the part of day before the hour, and it matters.** Without it
+  both 08:00 and 20:00 render "8 baj gaye", which is one cache entry and an
+  evening reminder that sounds like a morning one. `strings.period_word`
+  prefixes صبح / دوپہر / شام / رات. Caught by the verification script, not by
+  reading the code.
+- **PyAV needs an explicit resampler for Opus.** Passing decoded MP3 frames
+  straight to the encoder fails on layout and rate; `AudioResampler(format=
+  "s16", layout="mono", rate=48000)` in between is what produces the mono
+  48kHz OGG/Opus invariant 7 requires. Still no ffmpeg binary anywhere.
 - **Everything else installs and imports cleanly on Python 3.14**, including the
   two that were most at risk: `faster-whisper 1.2.1` (with `ctranslate2 4.8.1`
   cp314 wheels) and `google-cloud-texttospeech 2.37.0`. The Day-3 wheel risk is
@@ -321,6 +359,68 @@ push at the end of every phase**, one commit per phase, `feat(scope): ...` per
   `reactionMessage`, `pollUpdateMessage` and `keepInChatMessage`.
 
 ## Decisions log
+
+### 2026-08-24 — Session 9 (Phase 5: the voice notes)
+
+**Done:** `voice/tts.py` and `voice/store.py`, spoken copy in
+`i18n/strings.SPOKEN`, pre-generation wired to the two medicine endpoints, and
+the voice note attached in `ticker.send_reminder` / `send_followup`. 32/32
+against live edge-tts and the live database, 25 new unit tests (107 total).
+
+**The finding that shaped everything: this voice cannot read Roman Urdu.**
+Measured before writing any of it, by synthesising and transcribing back with
+the whisper model the project already trusts. The reminder copy as written for
+the text message loses the patient's name and mangles "waqt hai". The same
+sentence in Urdu script comes back almost word for word. So the voice note is
+**not a reading of the message** - `SPOKEN` is its own dict, in Urdu script,
+and the two are allowed to differ.
+
+**Key decisions:**
+
+- **Nothing from the database is ever spoken.** The confirmed purpose is
+  stored in Roman Urdu, and spoken aloud "bukhar aur dard ke liye" comes out
+  as "...aur dard ke liye" - the word *fever* silently gone. That makes the
+  third bullet of Phase 5's "Done when" undeliverable on the current data, and
+  the right answer was to not ship it rather than ship audio that drops
+  clinical words. Only templates written in Urdu script are spoken. A purpose
+  typed in Urdu script would work today; it is a data fix, not a code one.
+- **Cache keys are content-addressed** - a hash of the voice plus the exact
+  sentence. §14 asks for caching by `(medicine, dose_time)`; hashing the
+  sentence *is* that, and it also means two patients on the same medicine at
+  the same hour share a file, and that changing the copy can never serve the
+  old audio. Verified: 28 doses, 2 files.
+- **Local disk is the primary store, not a cache in front of Supabase.** The
+  opposite of the reports, and deliberately: the ticker reads this at the
+  moment a dose is due, and §3.4 forbids synthesising there. It also means the
+  feature works with `SUPABASE_SERVICE_KEY` unset, which it currently is.
+- **The "never synthesise in the reminder path" rule is tested, not asserted.**
+  `verify_voice.py` replaces `tts.synthesise` with a function that raises, then
+  sends a reminder and checks the voice note still went. That is the only
+  honest way to prove a negative about a code path.
+- **Urdu needs the part of day before the hour.** Without it 08:00 and 20:00
+  are the same sentence, one cache file, and an evening reminder that says
+  "morning". Found by the verification script asserting the two should differ -
+  the test was written expecting a pass and failed, which is the good kind.
+- **Voice replies match the modality.** A patient who sends a voice note gets
+  one back; a patient who types gets text. Someone sending voice is often
+  someone who finds reading hard, and a surprise audio clip for someone who
+  typed is noise.
+- **`app/storage.py` was extracted** so reports and voice share one Supabase
+  Storage client instead of two copies of the RLS handling. Not in the §7
+  layout; §7 updated.
+- **Text copy was left alone.** The text reminder still says "8 baj gaye" for
+  both times. Changing it would mean re-verifying Phase 2's 42 checks for a
+  cosmetic gain, and the patient can see the clock. Worth doing if that copy
+  is ever touched for another reason.
+
+**Not done:** nobody has heard these files. The round trip proves the words are
+right, not that the voice sounds right - §14 asks a human to judge that, and it
+is step 1 of Next steps along with the report buttons.
+
+**Before touching this area next:** `strings.SPOKEN` is the whitelist. If a
+message has no entry there it is never spoken, and that is the mechanism
+keeping database free text out of the audio - not a check somewhere in the
+send path that could be forgotten.
 
 ### 2026-08-23 — Session 8 (Phase 6: the two reports, and a wording fix)
 

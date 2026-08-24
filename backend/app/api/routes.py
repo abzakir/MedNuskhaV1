@@ -19,7 +19,8 @@ from typing import Any
 import httpx
 import jwt
 from sqlalchemy.exc import IntegrityError
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import (APIRouter, BackgroundTasks, Depends, HTTPException,
+                     Query, Request, Response)
 from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session, col, func, select
 
@@ -598,6 +599,7 @@ async def lookup_medicine(body: LookupIn,
 
 @router.post("/medicines", status_code=201)
 async def create_medicine(body: MedicineIn,
+                          background: BackgroundTasks,
                           caretaker: Caretaker = Depends(current_caretaker),
                           session: Session = Depends(get_session)) -> dict:
     """Confirm and add. One transaction: reference row, medicine, schedule.
@@ -646,6 +648,10 @@ async def create_medicine(body: MedicineIn,
     except Exception as exc:  # noqa: BLE001 - the ticker will catch up
         log.warning("immediate materialisation failed: %s", exc)
 
+    # Phase 5. Confirming the schedule is the moment the wording is final, so
+    # it is the moment to synthesise - never in the reminder path (3.4).
+    _pregenerate_voice(background, medicine.id)
+
     return {
         "id": medicine.id,
         "name": medicine.name,
@@ -660,6 +666,7 @@ async def create_medicine(body: MedicineIn,
 
 @router.patch("/medicines/{medicine_id}")
 def update_schedule(medicine_id: str, body: ScheduleIn,
+                    background: BackgroundTasks,
                     caretaker: Caretaker = Depends(current_caretaker),
                     session: Session = Depends(get_session)) -> dict:
     """Change the dose times or the length of a course already running.
@@ -702,6 +709,10 @@ def update_schedule(medicine_id: str, body: ScheduleIn,
         log.warning("re-materialisation after edit failed: %s", exc)
         created = 0
 
+    # New times mean new sentences ("8 baj gaye" -> "9 baj gaye"), and new
+    # doses with no audio attached yet.
+    _pregenerate_voice(background, medicine.id)
+
     log.info("caretaker %s changed %s to %s for %d days (%d dropped, %d created)",
              caretaker.id, medicine.name, body.dose_times, body.duration_days,
              removed, created)
@@ -714,6 +725,22 @@ def update_schedule(medicine_id: str, body: ScheduleIn,
         "doses_removed": removed,
         "doses_created": created,
     }
+
+
+def _pregenerate_voice(background: BackgroundTasks, medicine_id: str) -> None:
+    """Queue the Urdu voice notes for a medicine, after the response is sent.
+
+    A background task, not an await: synthesis is a network round trip per
+    unique dose time, and a caretaker pressing Confirm should not sit and
+    watch a spinner for it. If it fails the medicine is still added and every
+    reminder still goes out as text - `pregenerate_for_medicine` swallows its
+    own failures for exactly that reason.
+    """
+    if not settings.voice_notes_enabled:
+        return
+    from app.voice.tts import pregenerate_for_medicine
+
+    background.add_task(pregenerate_for_medicine, medicine_id)
 
 
 #: A dose due within this window is left alone - the ticker may already be
