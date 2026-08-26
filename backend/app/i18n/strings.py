@@ -88,13 +88,17 @@ STRINGS: dict[str, dict[str, str]] = {
     "care_help": {
         "ur": ("Main MedNuskha hoon. Aap mujhe ye likh sakte hain:\n"
                "- status : aaj ki report\n"
+               "- kyun nahi li : chhooti hui khurakon ki wajah\n"
                "- rok dein : yaad-dahani band\n"
                "- shuru karein : dobara chalu\n"
+               "Naam likh kar poochh sakte hain, jaise \"Ammi ka status\".\n"
                "Dawai add ya edit karne ke liye website kholein."),
         "en": ("This is MedNuskha. You can send me:\n"
                "- status : today's report\n"
+               "- why : the reasons for any missed doses\n"
                "- pause : stop reminders\n"
                "- resume : start them again\n"
+               "You can name the person too, like \"status for Ammi\".\n"
                "To add or edit a medicine, open the website."),
     },
     "care_status": {
@@ -127,6 +131,21 @@ STRINGS: dict[str, dict[str, str]] = {
     #: They named somebody, but not clearly enough to be sure which. Asking
     #: again costs one message; guessing could pause the wrong person's
     #: reminders, so the wording says plainly that the name was not clear.
+    #: "Why didn't she take it?" - answered with the patient's own words and
+    #: nothing else. The agent does not offer a theory about why somebody
+    #: missed a dose; it repeats what was said and lets the family judge.
+    "care_why": {
+        "ur": ("{patient} ne jo khurakein nahi lein, aur us waqt kya kaha:\n\n"
+               "{lines}\n\n"
+               "Ye unhi ke alfaz hain."),
+        "en": ("Doses {patient} did not take, and what they said at the time:\n\n"
+               "{lines}\n\n"
+               "These are their own words."),
+    },
+    "care_why_none": {
+        "ur": "{patient} ki koi khurak nahi chhooti. Sab li gayi hain.",
+        "en": "{patient} hasn't missed a dose. All taken.",
+    },
     "care_which_patient_again": {
         "ur": ("Naam theek se samajh nahi aaya. Poora naam likh dein: {names}"),
         "en": ("I couldn't tell which name that was. Please write it in full: "

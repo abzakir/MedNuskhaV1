@@ -7,9 +7,13 @@ it?" is friction. So they can ask here.
 
 What they can do:
     status              today's doses for the patient
+    why                 why a dose was missed, in the patient's own words
     pause / rok dein    stop reminders
     resume / shuru      start them again
     help                what can I ask
+
+It also holds a short conversational memory, because a caretaker asking a
+follow-up does not re-introduce the subject. See _AWAITING and _SUBJECT.
 
 Deliberately NOT here: adding or editing a medicine. That needs the
 confirmation screen (invariant 3), and a medicine created from a voice note
@@ -55,6 +59,16 @@ _STATUS_RE = re.compile(
     r"رپورٹ|کیسی\s*ہے|کیسا\s*ہے",
     re.IGNORECASE,
 )
+#: "Q nahi li usnay", "kyun nahi li", "why did she miss it". Checked BEFORE
+#: status, because "nahi li" matches the status pattern too and the more
+#: specific question deserves the more specific answer.
+_WHY_RE = re.compile(
+    r"\b(kyun|kyu|kiun|kyon|q)\b[^?]{0,25}\b(nahi|nhi|miss(ed)?|chhori|chori)\b|"
+    r"\bwhy\b[^?]{0,30}\b(not|didn.?t|did\s*not|miss(ed)?|skip(ped)?)\b|"
+    r"\b(wajah|reason|kya\s*kaha|kya\s*bola|what\s*did\s*(she|he|they)\s*say)\b|"
+    r"کیوں\s*نہیں|وجہ",
+    re.IGNORECASE,
+)
 _PAUSE_RE = re.compile(
     r"\b(pause|rok\s*(dein|do|den)|band\s*kar\s*(dein|do|den)|stop\s*reminders?|"
     r"mat\s*bhejo|na\s*bhejo)\b|روک\s*د|بند\s*کر",
@@ -76,6 +90,7 @@ script, Roman Urdu, English, or a transcript of a voice note.
 
 Choose exactly one kind:
 - status: they want to know how the patient is doing, or whether a dose was taken
+- why: they are asking WHY a dose was missed, or what the patient said about it
 - pause: they want reminders stopped for now
 - resume: they want reminders started again
 - help: they are asking what they can do
@@ -150,6 +165,10 @@ def _fast_kind(text: str) -> str | None:
         return "clinical"
     if _HELP_RE.search(clean):
         return "help"
+    # Before status: "kyun nahi li" contains "nahi li", which is a status
+    # pattern, but they are asking for the reason and not for the tally.
+    if _WHY_RE.search(clean):
+        return "why"
     if _RESUME_RE.search(clean):
         return "resume"
     if _PAUSE_RE.search(clean):
@@ -194,6 +213,39 @@ _AWAITING: dict[str, tuple[str, float]] = {}
 #: Long enough to walk to the kitchen and answer, short enough that tomorrow's
 #: "Affan" is not read as an answer to today's question.
 _AWAITING_TTL = 10 * 60
+
+
+#: Who the caretaker is currently talking about. Separate from _AWAITING,
+#: which is a half-finished command; this is the subject of the conversation.
+#:
+#: Observed on a live phone: the agent answered a full status report about
+#: Affan Jani, and the very next message - "Q nahi li usnay", why didn't he
+#: take it - was met with "Kis ke baare mein?" again. Every message was read
+#: as if the last one had never happened. A person who has just been told
+#: about Affan does not re-introduce him in the next sentence.
+_SUBJECT: dict[str, tuple[str, float]] = {}
+#: Shorter than the pending-question window. A conversation moves on, and
+#: yesterday's subject must never silently absorb today's "rok dein".
+_SUBJECT_TTL = 15 * 60
+
+
+def _remember_subject(caretaker_id: str, patient_id: str) -> None:
+    _SUBJECT[caretaker_id] = (patient_id, time.monotonic() + _SUBJECT_TTL)
+
+
+def _recent_subject(patients: list[dict], caretaker_id: str) -> dict | None:
+    """Who we were just discussing, if that is still recent enough to assume."""
+    entry = _SUBJECT.get(caretaker_id)
+    if entry is None:
+        return None
+    patient_id, expires = entry
+    if time.monotonic() > expires:
+        _SUBJECT.pop(caretaker_id, None)
+        return None
+    for patient in patients:
+        if patient["id"] == patient_id:
+            return patient
+    return None
 
 
 def _remember_question(caretaker_id: str, kind: str) -> None:
@@ -335,6 +387,46 @@ def _today_lines(patient_id: str, lang: str) -> tuple[int, int, str]:
     return taken, len(rows), "\n".join(lines)
 
 
+#: How far back "why didn't she take it" looks. Today plus yesterday, because
+#: a caretaker who reads the evening alert often asks the next morning.
+_WHY_WINDOW = timedelta(days=2)
+
+
+def _why_lines(patient_id: str, lang: str) -> tuple[int, str]:
+    """(how many, one line each) for recent doses that were not taken.
+
+    The patient's own words, verbatim and untranslated (invariant 8). This
+    module does not interpret them and does not summarise them - it repeats
+    what was said and lets the human draw the conclusion.
+    """
+    since = datetime.now(timezone.utc) - _WHY_WINDOW
+
+    with session_scope() as session:
+        rows = session.exec(
+            select(DoseEvent, Medicine)
+            .join(Schedule, Schedule.id == DoseEvent.schedule_id)
+            .join(Medicine, Medicine.id == Schedule.medicine_id)
+            .where(DoseEvent.patient_id == patient_id)
+            .where(col(DoseEvent.state).in_(("MISSED", "SKIPPED")))
+            .where(DoseEvent.scheduled_at >= since)
+            .order_by(col(DoseEvent.scheduled_at).desc())).all()
+
+    no_reason = "koi wajah nahi batai" if lang == "ur" else "no reason given"
+    lines = []
+    for dose, medicine in rows[:6]:
+        when = dose.scheduled_at
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        label = f"{medicine.name} {medicine.strength}".strip() if medicine.strength \
+            else medicine.name
+        said = (dose.reason or dose.response_text or "").strip()
+        lines.append(f"{when.astimezone(settings.tz):%d %b %H:%M}  {label}\n"
+                     f"   “{said}”" if said
+                     else f"{when.astimezone(settings.tz):%d %b %H:%M}  {label}\n"
+                          f"   ({no_reason})")
+    return len(rows), "\n".join(lines)
+
+
 def _set_stopped(patient_id: str, stopped: bool) -> None:
     with session_scope() as session:
         patient = session.get(Patient, patient_id)
@@ -398,6 +490,25 @@ async def handle(text: str, caretaker: dict) -> None:
         kind = pending
         _forget_question(caretaker["id"])
 
+    # A follow-up does not re-introduce the subject. Somebody who has just
+    # been told about Affan and then asks "Q nahi li usnay" means Affan, and
+    # asking "which patient?" again is the machine forgetting a conversation
+    # a human is plainly still having.
+    #
+    # READ-ONLY INTENTS ONLY. `pause` and `resume` change whether a patient
+    # gets their reminders at all, and carrying a subject over is a guess -
+    # a good guess, but the cost of being wrong is somebody silently stopping
+    # getting their medicine. Those two always name their patient out loud.
+    if patient is None and kind in ("status", "why"):
+        carried = _recent_subject(patients, caretaker["id"])
+        if carried is not None:
+            log.info("caretaker %s: carrying %s over from the last message",
+                     caretaker["id"], carried["name"])
+            patient = carried
+
+    if patient is not None:
+        _remember_subject(caretaker["id"], patient["id"])
+
     log.info("caretaker %s: kind=%s patient=%s",
              caretaker["id"], kind, patient["name"] if patient else None)
 
@@ -412,7 +523,7 @@ async def handle(text: str, caretaker: dict) -> None:
         await say("care_help")
         return
 
-    if kind in ("status", "pause", "resume") and patient is None:
+    if kind in ("status", "why", "pause", "resume") and patient is None:
         # Remember what we are waiting for, so the answer can complete it.
         _remember_question(caretaker["id"], kind)
         if names_someone(patients, f"{text} {named or ''}"):
@@ -433,6 +544,16 @@ async def handle(text: str, caretaker: dict) -> None:
         else:
             await say("care_status", patient=patient["name"],
                       taken=taken, total=total, lines=lines)
+        return
+
+    if kind == "why":
+        count, lines = await asyncio.to_thread(_why_lines, patient["id"], lang)
+        if count == 0:
+            await say("care_why_none", patient=patient["name"])
+        else:
+            # Their own words, repeated. This module does not interpret them
+            # and does not offer a theory (invariant 8) - the human does that.
+            await say("care_why", patient=patient["name"], lines=lines)
         return
 
     if kind == "pause":

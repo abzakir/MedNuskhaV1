@@ -142,6 +142,55 @@ async def main() -> int:
     check("and asks what they want done",
           "status" in body.lower(), body[:90])
 
+    print("\n=== the follow-up conversation from the second screenshot")
+    care._forget_question(CARE["id"])
+    care._SUBJECT.pop(CARE["id"], None)
+
+    await send("status")
+    body = await send(FIRST)
+    check("status answered for the named patient", TARGET in body, body[:70])
+
+    body = await send("Q nahi li usnay")
+    print("     caretaker: Q nahi li usnay")
+    print(f"     agent    : {body[:150]}")
+    check("THE 2nd BUG: does not ask which patient again",
+          "kis ke baare mein" not in body.lower(), body[:80])
+    check("understood as a why question",
+          "samajh nahi aaya" not in body.lower(), body[:80])
+    check("answers about the patient we were discussing", TARGET in body, body[:80])
+    check("and the answer is their own words, or says nothing was missed",
+          "alfaz" in body.lower() or "own words" in body.lower()
+          or "nahi chhooti" in body.lower() or "missed" in body.lower(),
+          body[:110])
+
+    print("\n=== 'why' phrased several ways all reach the same place")
+    for phrasing in ["kyun nahi li", "why did he miss it", "wajah kya thi"]:
+        assert care._fast_kind(phrasing) == "why", phrasing
+    check("kyun / why / wajah all classify as why", True)
+    check("but 'question' does not false-match on the bare q",
+          care._fast_kind("question about something") != "why")
+
+    print("\n=== a state change is never carried over silently")
+    care._forget_question(CARE["id"])
+    care._SUBJECT.pop(CARE["id"], None)
+    await send("status")
+    await send(FIRST)                      # subject is now set
+    body = await send("rok dein")
+    print(f"     agent    : {body[:100]}")
+    check("pause still asks who, even with a subject in memory",
+          "kis ke baare mein" in body.lower() or "which one" in body.lower(),
+          body[:90])
+
+    print("\n=== an emoji on its own")
+    body = await send("\U0001f642")
+    print(f"     agent    : {body[:110]}")
+    check("does not crash, and says something", bool(body.strip()))
+
+    print("\n=== the subject does not leak across a long gap")
+    care._SUBJECT[CARE["id"]] = (PATIENTS[0]["id"], 0.0)      # expired
+    check("stale subject is dropped",
+          care._recent_subject(PATIENTS, CARE["id"]) is None)
+
     print("\n=== a stale question is not answered hours later")
     care._forget_question(CARE["id"])
     await send("status")
