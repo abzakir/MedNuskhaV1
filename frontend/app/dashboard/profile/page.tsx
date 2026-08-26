@@ -82,12 +82,12 @@ export default function ProfilePage() {
         )}
 
         {error && (
-          <p className="rounded-lg bg-rose-50 p-3 text-sm text-rose-900 dark:bg-rose-950/50 dark:text-rose-200">
+          <p className="rounded-lg bg-missed-soft p-3 text-sm text-missed">
             {error}
           </p>
         )}
         {saved && (
-          <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200">
+          <p className="rounded-lg bg-taken-soft p-3 text-sm text-taken">
             Saved.
           </p>
         )}

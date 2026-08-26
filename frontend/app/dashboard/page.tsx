@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { AdherenceNumber } from "@/components/status-pill";
 import { api, type PatientSummary } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 export default function OverviewPage() {
   const [patients, setPatients] = useState<PatientSummary[] | null>(null);
@@ -27,26 +28,27 @@ export default function OverviewPage() {
   }, []);
 
   if (error) {
-    return (
-      <p className="rounded-lg bg-rose-50 p-4 text-sm text-rose-900 dark:bg-rose-950/50 dark:text-rose-200">
-        {error}
-      </p>
-    );
+    return <p className="rounded-lg bg-missed-soft p-4 text-sm text-missed">{error}</p>;
+  }
+  if (patients === null) {
+    return <p className="text-sm text-muted-foreground">Loading&hellip;</p>;
   }
 
-  if (patients === null) {
-    return <p className="text-sm text-muted-foreground">Loading…</p>;
-  }
+  const needAttention = patients.filter((p) => p.today.missed > 0 || p.stopped);
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-end justify-between gap-4">
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Your family</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <h1 className="font-display text-4xl leading-none tracking-tight">
+            Your family
+          </h1>
+          <p className="mt-2 text-sm text-muted-foreground">
             {patients.length === 0
               ? "Nobody added yet."
-              : `${patients.length} ${patients.length === 1 ? "person" : "people"} under your care.`}
+              : needAttention.length > 0
+                ? `${needAttention.length} ${needAttention.length === 1 ? "person needs" : "people need"} a look today.`
+                : `Everyone is keeping up.`}
           </p>
         </div>
         <Button asChild>
@@ -54,8 +56,10 @@ export default function OverviewPage() {
         </Button>
       </div>
 
-      {patients.length === 0 ? <EmptyState /> : (
-        <div className="grid gap-4 sm:grid-cols-2">
+      {patients.length === 0 ? (
+        <EmptyState />
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-2">
           {patients.map((p) => (
             <PatientCard key={p.id} patient={p} />
           ))}
@@ -67,11 +71,11 @@ export default function OverviewPage() {
 
 function EmptyState() {
   return (
-    <div className="rounded-xl border border-dashed bg-card p-10 text-center">
-      <h2 className="text-lg font-medium">Start with one person</h2>
-      <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
+    <div className="rounded-xl border border-dashed bg-card p-12 text-center">
+      <h2 className="font-display text-2xl">Start with one person</h2>
+      <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-muted-foreground">
         Add the family member you look after, then their medicines and times.
-        They&apos;ll get a WhatsApp reminder at every dose — nothing to install,
+        They&apos;ll get a WhatsApp reminder at every dose &mdash; nothing to install,
         nothing to learn.
       </p>
       <Button asChild className="mt-6">
@@ -83,78 +87,101 @@ function EmptyState() {
 
 function PatientCard({ patient }: { patient: PatientSummary }) {
   const { today, adherence } = patient;
-  const allDone = today.total > 0 && today.pending === 0 && today.missed === 0;
+  const attention = today.missed > 0 || patient.stopped;
 
   return (
     <Link
       href={`/dashboard/patients/${patient.id}`}
-      className="group rounded-xl border bg-card p-5 transition-shadow hover:shadow-md"
+      className={cn(
+        "group block rounded-xl border bg-card p-5 shadow-card transition-all",
+        "hover:-translate-y-0.5 hover:shadow-lift",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+        // A left edge that carries the state, so a wall of cards is scannable
+        // without reading any of them.
+        attention ? "border-l-[3px] border-l-missed" : "border-l-[3px] border-l-taken",
+      )}
     >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h3 className="truncate text-lg font-medium group-hover:text-teal-700 dark:group-hover:text-teal-400">
+          <h3 className="truncate font-display text-2xl leading-tight transition-colors group-hover:text-primary">
             {patient.name}
           </h3>
-          <p className="mt-0.5 font-mono text-xs text-muted-foreground">
+          <p className="mt-1 font-mono text-xs text-muted-foreground">
             +{patient.whatsapp_number}
           </p>
         </div>
-        <div className="text-right">
+        <div className="shrink-0 text-right">
           <AdherenceNumber percent={adherence.percent} />
-          <p className="text-[11px] text-muted-foreground">
-            last {adherence.days} days
+          <p className="mt-1 text-[10px] uppercase tracking-label text-muted-foreground">
+            {adherence.days} days
           </p>
         </div>
       </div>
 
       {patient.stopped && (
-        <p className="mt-3 rounded-md bg-rose-50 px-2.5 py-1.5 text-xs text-rose-900 dark:bg-rose-950/50 dark:text-rose-200">
-          This patient replied STOP — reminders are paused.
+        <p className="mt-4 rounded-md bg-missed-soft px-3 py-2 text-xs text-missed">
+          Replied STOP &mdash; reminders are paused.
         </p>
       )}
 
-      <dl className="mt-4 grid grid-cols-3 gap-2 border-t pt-4 text-center">
-        <Stat label="Today" value={today.total} />
-        <Stat label="Taken" value={today.taken} tone={today.taken > 0 ? "good" : undefined} />
-        <Stat
-          label={today.missed > 0 ? "Missed" : "Pending"}
-          value={today.missed > 0 ? today.missed : today.pending}
-          tone={today.missed > 0 ? "bad" : undefined}
-        />
-      </dl>
-
-      <p className="mt-3 text-xs text-muted-foreground">
-        {patient.medicine_count === 0
-          ? "No medicines yet — add one to start reminders."
-          : allDone
-            ? `All ${today.total} doses done today.`
-            : `${patient.medicine_count} ${patient.medicine_count === 1 ? "medicine" : "medicines"}`}
-      </p>
+      {/* Today, as a single readable line rather than three anonymous numbers. */}
+      <div className="mt-4 border-t border-border pt-4">
+        {today.total === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            {patient.medicine_count === 0
+              ? "No medicines yet — add one to start reminders."
+              : "Nothing due today."}
+          </p>
+        ) : (
+          <>
+            <TodayBar today={today} />
+            <p className="mt-2.5 text-sm">
+              <span className="font-medium">
+                {today.taken} of {today.total}
+              </span>{" "}
+              <span className="text-muted-foreground">taken today</span>
+              {today.missed > 0 && (
+                <span className="text-missed"> &middot; {today.missed} missed</span>
+              )}
+              {today.pending > 0 && (
+                <span className="text-muted-foreground">
+                  {" "}
+                  &middot; {today.pending} to come
+                </span>
+              )}
+            </p>
+          </>
+        )}
+      </div>
     </Link>
   );
 }
 
-function Stat({
-  label,
-  value,
-  tone,
+/** Today's doses as one bar: kept, missed, still to come. */
+function TodayBar({
+  today,
 }: {
-  label: string;
-  value: number;
-  tone?: "good" | "bad";
+  today: { total: number; taken: number; missed: number; pending: number };
 }) {
-  const colour =
-    tone === "good"
-      ? "text-emerald-600 dark:text-emerald-400"
-      : tone === "bad"
-        ? "text-rose-600 dark:text-rose-400"
-        : "";
+  const segments = [
+    { n: today.taken, className: "bg-taken", label: "taken" },
+    { n: today.missed, className: "bg-missed", label: "missed" },
+    { n: today.pending, className: "bg-pending-soft", label: "still to come" },
+  ].filter((s) => s.n > 0);
+
   return (
-    <div>
-      <dd className={`text-xl font-semibold tabular-nums ${colour}`}>{value}</dd>
-      <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">
-        {label}
-      </dt>
+    <div
+      className="flex h-1.5 gap-px overflow-hidden rounded-full"
+      role="img"
+      aria-label={segments.map((s) => `${s.n} ${s.label}`).join(", ")}
+    >
+      {segments.map((s) => (
+        <span
+          key={s.label}
+          className={cn("h-full transition-all duration-500", s.className)}
+          style={{ flexGrow: s.n }}
+        />
+      ))}
     </div>
   );
 }

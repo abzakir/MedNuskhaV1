@@ -215,6 +215,12 @@ export type Today = {
   summary: { total: number; taken: number; missed: number; pending: number };
 };
 
+export type History = {
+  patient_id: string;
+  days: number;
+  doses: Dose[];
+};
+
 export type EventRow = {
   kind: "message" | "symptom";
   at: string;
@@ -258,6 +264,10 @@ export const api = {
   patient: (id: string) => get<PatientDetail>(`/api/patients/${id}`),
   today: (id: string) => get<Today>(`/api/patients/${id}/today`),
   events: (id: string) => get<EventRow[]>(`/api/patients/${id}/events`),
+
+  /** Every dose over the last N days, for the adherence chart. */
+  history: (id: string, days = 14) =>
+    get<History>(`/api/patients/${id}/history?days=${days}`),
 
   addPatient: (body: {
     name: string;

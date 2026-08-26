@@ -172,7 +172,7 @@ export default function AddMedicinePage() {
                       : "Drafted by AI. Read it carefully and correct anything wrong."}
                 </p>
               </div>
-              <span className="shrink-0 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-300">
+              <span className="shrink-0 rounded-full bg-late-soft px-2.5 py-1 text-xs font-medium text-late">
                 Needs your OK
               </span>
             </div>
@@ -208,7 +208,7 @@ export default function AddMedicinePage() {
             </div>
 
             {edited && (
-              <p className="mt-3 text-xs text-teal-700 dark:text-teal-400">
+              <p className="mt-3 text-xs text-taken">
                 You&apos;ve edited the draft — your wording will be saved, not the AI&apos;s.
               </p>
             )}
@@ -223,9 +223,8 @@ export default function AddMedicinePage() {
                   key={t}
                   type="button"
                   onClick={() => toggleTime(t)}
-                  className={`rounded-full border px-4 py-2 font-mono text-sm transition-colors ${
-                    times.includes(t)
-                      ? "border-teal-600 bg-teal-50 text-teal-800 dark:bg-teal-950 dark:text-teal-300"
+                  className={`rounded-full border px-4 py-2 font-mono text-sm transition-colors ${ times.includes(t)
+                      ? "border-taken/40 bg-taken-soft text-taken"
                       : "hover:bg-muted"
                   }`}
                 >
@@ -272,9 +271,8 @@ export default function AddMedicinePage() {
                   key={d}
                   type="button"
                   onClick={() => setDays(d)}
-                  className={`rounded-full border px-4 py-2 text-sm transition-colors ${
-                    days === d
-                      ? "border-teal-600 bg-teal-50 text-teal-800 dark:bg-teal-950 dark:text-teal-300"
+                  className={`rounded-full border px-4 py-2 text-sm transition-colors ${ days === d
+                      ? "border-taken/40 bg-taken-soft text-taken"
                       : "hover:bg-muted"
                   }`}
                 >
@@ -333,9 +331,8 @@ function Step({
   return (
     <li className="flex items-center gap-2">
       <span
-        className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-medium ${
-          done
-            ? "bg-teal-600 text-white"
+        className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-medium ${ done
+            ? "bg-primary text-white"
             : active
               ? "bg-foreground text-background"
               : "bg-muted text-muted-foreground"
@@ -378,7 +375,7 @@ function Field({
 
 function ErrorBox({ message }: { message: string }) {
   return (
-    <p className="rounded-lg bg-rose-50 p-3 text-sm text-rose-900 dark:bg-rose-950/50 dark:text-rose-200">
+    <p className="rounded-lg bg-missed-soft p-3 text-sm text-missed">
       {message}
     </p>
   );

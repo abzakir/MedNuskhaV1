@@ -68,17 +68,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const connected = wa?.state === "connected";
 
   return (
-    <div className="min-h-screen bg-muted/30">
+    <div className="min-h-screen bg-paper">
       <header className="sticky top-0 z-10 border-b bg-background/90 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-5xl items-center gap-4 px-4">
+        <div className="mx-auto flex h-16 max-w-5xl items-center gap-5 px-4">
           <Link
             href="/dashboard"
-            className="text-lg font-semibold tracking-tight text-teal-700 dark:text-teal-400"
+            className="font-display text-2xl leading-none tracking-tight text-primary transition-opacity hover:opacity-80"
           >
             MedNuskha
           </Link>
 
-          <nav className="hidden gap-1 sm:flex">
+          <nav className="hidden gap-5 sm:flex">
             <NavLink href="/dashboard" active={pathname === "/dashboard"}>
               Patients
             </NavLink>
@@ -101,7 +101,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             >
               <span
                 className={`h-2 w-2 rounded-full ${
-                  connected ? "bg-emerald-500" : "bg-rose-500"
+                  connected ? "bg-taken animate-breathe" : "bg-missed"
                 }`}
               />
               <span className="hidden sm:inline">
@@ -130,8 +130,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       </header>
 
       {!connected && (
-        <div className="border-b bg-amber-50 dark:bg-amber-950/40">
-          <div className="mx-auto max-w-5xl px-4 py-2 text-sm text-amber-900 dark:text-amber-200">
+        <div className="border-b border-late/30 bg-late-soft">
+          <div className="mx-auto max-w-5xl px-4 py-2 text-sm text-late">
             <strong className="font-medium">Reminders are not being delivered.</strong>{" "}
             {wa?.state === "qr"
               ? "The WhatsApp bridge is waiting for a QR scan."
@@ -143,8 +143,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       )}
 
       {me?.needs_phone && (
-        <div className="border-b bg-sky-50 dark:bg-sky-950/40">
-          <div className="mx-auto max-w-5xl px-4 py-2 text-sm text-sky-900 dark:text-sky-200">
+        <div className="border-b border-live/30 bg-live-soft">
+          <div className="mx-auto max-w-5xl px-4 py-2 text-sm text-live">
             Add your own WhatsApp number so we can alert you when a dose is missed.{" "}
             <Link href="/dashboard/profile" className="font-medium underline underline-offset-2">
               Add it now
@@ -170,9 +170,10 @@ function NavLink({
   return (
     <Link
       href={href}
-      className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
+      className={`relative px-1 py-1.5 text-sm transition-colors ${
         active
-          ? "bg-muted font-medium text-foreground"
+          ? "font-medium text-foreground after:absolute after:inset-x-0 after:-bottom-px "
+            + "after:h-0.5 after:rounded-full after:bg-primary after:content-['']"
           : "text-muted-foreground hover:text-foreground"
       }`}
     >

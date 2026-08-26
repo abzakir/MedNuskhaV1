@@ -98,9 +98,8 @@ export default function AddPatientPage() {
                 key={r.value}
                 type="button"
                 onClick={() => setRelation(r.value)}
-                className={`rounded-full border px-3.5 py-1.5 text-sm transition-colors ${
-                  relation === r.value
-                    ? "border-teal-600 bg-teal-50 text-teal-800 dark:bg-teal-950 dark:text-teal-300"
+                className={`rounded-full border px-3.5 py-1.5 text-sm transition-colors ${ relation === r.value
+                    ? "border-taken/40 bg-taken-soft text-taken"
                     : "hover:bg-muted"
                 }`}
               >
@@ -121,9 +120,8 @@ export default function AddPatientPage() {
                 key={l.value}
                 type="button"
                 onClick={() => setLanguage(l.value)}
-                className={`rounded-full border px-3.5 py-1.5 text-sm transition-colors ${
-                  language === l.value
-                    ? "border-teal-600 bg-teal-50 text-teal-800 dark:bg-teal-950 dark:text-teal-300"
+                className={`rounded-full border px-3.5 py-1.5 text-sm transition-colors ${ language === l.value
+                    ? "border-taken/40 bg-taken-soft text-taken"
                     : "hover:bg-muted"
                 }`}
               >
@@ -134,7 +132,7 @@ export default function AddPatientPage() {
         </div>
 
         {error && (
-          <p className="rounded-lg bg-rose-50 p-3 text-sm text-rose-900 dark:bg-rose-950/50 dark:text-rose-200">
+          <p className="rounded-lg bg-missed-soft p-3 text-sm text-missed">
             {error}
           </p>
         )}

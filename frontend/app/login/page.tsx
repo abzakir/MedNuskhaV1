@@ -81,18 +81,35 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-gradient-to-b from-teal-50 to-background p-6 dark:from-teal-950/30">
-      <div className="w-full max-w-sm">
+    <main className="relative flex min-h-screen items-center justify-center bg-paper p-6">
+      {/* The chart this replaces is ruled paper on a fridge door. Faint
+          enough to be texture rather than decoration. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 opacity-[0.35]"
+        style={{
+          backgroundImage:
+            "linear-gradient(to right, var(--border) 1px, transparent 1px)," +
+            "linear-gradient(to bottom, var(--border) 1px, transparent 1px)",
+          backgroundSize: "44px 44px",
+          maskImage:
+            "radial-gradient(ellipse 80% 60% at 50% 40%, black 20%, transparent 75%)",
+          WebkitMaskImage:
+            "radial-gradient(ellipse 80% 60% at 50% 40%, black 20%, transparent 75%)",
+        }}
+      />
+      <div className="relative w-full max-w-sm">
         <div className="mb-8 text-center">
-          <h1 className="text-3xl font-semibold tracking-tight text-teal-700 dark:text-teal-400">
+          <h1 className="font-display text-5xl leading-none tracking-tight text-primary">
             MedNuskha
           </h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Never let them miss a dose again.
+          <p className="mx-auto mt-3 max-w-[30ch] text-sm leading-relaxed text-muted-foreground">
+            Medicine reminders that reach your family on WhatsApp, in Urdu.
+            Nothing for them to install, nothing to learn.
           </p>
         </div>
 
-        <div className="rounded-xl border bg-card p-6 shadow-sm">
+        <div className="rounded-xl border bg-card p-6 shadow-lift">
           {/* Both options visible at once - a new caretaker should not have to
               hunt for sign-up inside a sentence. */}
           <div className="mb-6 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
@@ -114,7 +131,7 @@ export default function LoginPage() {
           </p>
 
           {!authConfigured && (
-            <p className="mt-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/50 dark:text-amber-200">
+            <p className="mt-4 rounded-lg bg-late-soft p-3 text-sm text-late">
               Supabase isn&apos;t configured. Add NEXT_PUBLIC_SUPABASE_URL and
               NEXT_PUBLIC_SUPABASE_ANON_KEY to frontend/.env.local.
             </p>
@@ -166,17 +183,17 @@ export default function LoginPage() {
             </div>
 
             {error && (
-              <p className="rounded-lg bg-rose-50 p-3 text-sm text-rose-900 dark:bg-rose-950/50 dark:text-rose-200">
+              <p className="rounded-lg bg-missed-soft p-3 text-sm text-missed">
                 {error}
               </p>
             )}
             {notice && (
-              <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200">
+              <p className="rounded-lg bg-taken-soft p-3 text-sm text-taken">
                 {notice}
               </p>
             )}
             {mode === "up" && needsEmailConfirmation && (
-              <p className="rounded-lg bg-sky-50 p-3 text-xs text-sky-900 dark:bg-sky-950/50 dark:text-sky-200">
+              <p className="rounded-lg bg-live-soft p-3 text-xs text-live">
                 This project requires email confirmation, so you&apos;ll get a link
                 before you can sign in. Use a real address.
               </p>
@@ -196,7 +213,7 @@ export default function LoginPage() {
               Looking after someone for the first time?{" "}
               <button
                 type="button"
-                className="font-medium text-teal-700 underline-offset-4 hover:underline dark:text-teal-400"
+                className="font-medium text-taken underline-offset-4 hover:underline"
                 onClick={() => switchTo("up")}
               >
                 Create an account
@@ -226,8 +243,7 @@ function TabButton({
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-        active
+      className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${ active
           ? "bg-background text-foreground shadow-sm"
           : "text-muted-foreground hover:text-foreground"
       }`}

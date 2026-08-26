@@ -123,7 +123,7 @@ export function MedicineCard({
               <span className="font-mono">{s.dose_times.join(", ")}</span> ·{" "}
               {s.duration_days} days
               {s.finished ? (
-                <span className="ml-1.5 text-emerald-700 dark:text-emerald-400">
+                <span className="ml-1.5 text-taken">
                   · course complete
                 </span>
               ) : (
@@ -168,9 +168,8 @@ export function MedicineCard({
                     key={t}
                     type="button"
                     onClick={() => toggleTime(t)}
-                    className={`rounded-full border px-3.5 py-1.5 font-mono text-sm transition-colors ${
-                      times.includes(t)
-                        ? "border-teal-600 bg-teal-50 text-teal-800 dark:bg-teal-950 dark:text-teal-300"
+                    className={`rounded-full border px-3.5 py-1.5 font-mono text-sm transition-colors ${ times.includes(t)
+                        ? "border-taken/40 bg-taken-soft text-taken"
                         : "bg-background hover:bg-muted"
                     }`}
                   >
@@ -197,9 +196,8 @@ export function MedicineCard({
                     key={d}
                     type="button"
                     onClick={() => setDays(d)}
-                    className={`rounded-full border px-3.5 py-1.5 text-sm transition-colors ${
-                      days === d
-                        ? "border-teal-600 bg-teal-50 text-teal-800 dark:bg-teal-950 dark:text-teal-300"
+                    className={`rounded-full border px-3.5 py-1.5 text-sm transition-colors ${ days === d
+                        ? "border-taken/40 bg-taken-soft text-taken"
                         : "bg-background hover:bg-muted"
                     }`}
                   >
@@ -266,7 +264,7 @@ export function MedicineCard({
                   <span>{medicine.adherence.late} late</span>
                 )}
                 {medicine.adherence.missed > 0 && (
-                  <span className="text-rose-600 dark:text-rose-400">
+                  <span className="text-missed">
                     {medicine.adherence.missed} missed
                   </span>
                 )}
@@ -313,7 +311,7 @@ export function MedicineCard({
             <Button
               size="sm"
               variant="ghost"
-              className="text-rose-600 hover:bg-rose-50 hover:text-rose-700 dark:text-rose-400 dark:hover:bg-rose-950"
+              className="text-missed hover:bg-missed-soft hover:text-missed"
               disabled={busy}
               onClick={() => setConfirmDelete(true)}
             >
@@ -324,7 +322,7 @@ export function MedicineCard({
       )}
 
       {note && !editing && (
-        <p className="mt-3 rounded-lg bg-emerald-50 p-2.5 text-xs text-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200">
+        <p className="mt-3 rounded-lg bg-taken-soft p-2.5 text-xs text-taken">
           {note}
         </p>
       )}
@@ -336,11 +334,11 @@ export function MedicineCard({
 
       {/* ------------------------------------------- delete confirmation */}
       {confirmDelete && (
-        <div className="mt-3 rounded-lg border border-rose-300 bg-rose-50 p-4 dark:border-rose-900 dark:bg-rose-950/40">
-          <p className="text-sm font-medium text-rose-900 dark:text-rose-200">
+        <div className="mt-3 rounded-lg border border-missed/40 bg-missed-soft p-4">
+          <p className="text-sm font-medium text-missed">
             Delete {medicine.name} completely?
           </p>
-          <p className="mt-1 text-sm text-rose-800 dark:text-rose-300">
+          <p className="mt-1 text-sm text-missed">
             This removes its dose history too, so it won&apos;t appear in any report.
             {medicine.adherence.decided > 0 && (
               <>
@@ -380,7 +378,7 @@ export function MedicineCard({
 
 function ErrorLine({ message }: { message: string }) {
   return (
-    <p className="rounded-lg bg-rose-50 p-2.5 text-xs text-rose-900 dark:bg-rose-950/50 dark:text-rose-200">
+    <p className="rounded-lg bg-missed-soft p-2.5 text-xs text-missed">
       {message}
     </p>
   );

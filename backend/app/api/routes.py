@@ -535,6 +535,36 @@ def today_doses(patient_id: str,
     }
 
 
+@router.get("/patients/{patient_id}/history")
+def dose_history(patient_id: str, days: int = Query(14, ge=1, le=90),
+                 caretaker: Caretaker = Depends(current_caretaker),
+                 session: Session = Depends(get_session)) -> dict:
+    """Every dose over the last `days`, for the adherence chart.
+
+    Deliberately the same `_dose_json` shape as `/today` - the chart and the
+    day view read one format, so a column in the chart and a row in today's
+    list can never disagree about what happened.
+    """
+    patient = _owned_patient(patient_id, caretaker, session)
+    _, end = _today_bounds()
+    start = end - timedelta(days=days)
+
+    rows = session.exec(
+        select(DoseEvent, Medicine)
+        .join(Schedule, Schedule.id == DoseEvent.schedule_id)
+        .join(Medicine, Medicine.id == Schedule.medicine_id)
+        .where(DoseEvent.patient_id == patient.id)
+        .where(DoseEvent.scheduled_at >= start)
+        .where(DoseEvent.scheduled_at < end)
+        .order_by(DoseEvent.scheduled_at)).all()
+
+    return {
+        "patient_id": patient.id,
+        "days": days,
+        "doses": [_dose_json(d, m) for d, m in rows],
+    }
+
+
 @router.get("/patients/{patient_id}/events")
 def event_log(patient_id: str, limit: int = Query(50, ge=1, le=200),
               caretaker: Caretaker = Depends(current_caretaker),
