@@ -27,7 +27,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 
 from sqlmodel import col, select
 
@@ -175,17 +177,120 @@ def patients_of(caretaker_id: str) -> list[dict]:
         return [{"id": p.id, "name": p.name, "stopped": p.stopped} for p in rows]
 
 
+# --------------------------------------------------------------------------
+# the question we just asked
+# --------------------------------------------------------------------------
+
+#: When the agent asks "which patient?", it has to be able to accept the
+#: answer. Without this the conversation deadlocks, and it did on a live
+#: phone: "status" -> "Kis ke baare mein?" -> "Affan" -> "samajh nahi aaya",
+#: forever. A bare name is not a command, so nothing downstream ever ran.
+#:
+#: Kept in memory rather than in a table because section 8 froze the schema
+#: and this is worth ten minutes, not a migration. One process owns the
+#: scheduler advisory lock, so there is one of these. A restart loses a
+#: half-finished question, which costs the caretaker one extra word.
+_AWAITING: dict[str, tuple[str, float]] = {}
+#: Long enough to walk to the kitchen and answer, short enough that tomorrow's
+#: "Affan" is not read as an answer to today's question.
+_AWAITING_TTL = 10 * 60
+
+
+def _remember_question(caretaker_id: str, kind: str) -> None:
+    _AWAITING[caretaker_id] = (kind, time.monotonic() + _AWAITING_TTL)
+
+
+def _pending_question(caretaker_id: str) -> str | None:
+    """The command still waiting on a patient name, if it has not gone stale."""
+    entry = _AWAITING.get(caretaker_id)
+    if entry is None:
+        return None
+    kind, expires = entry
+    if time.monotonic() > expires:
+        _AWAITING.pop(caretaker_id, None)
+        return None
+    return kind
+
+
+def _forget_question(caretaker_id: str) -> None:
+    _AWAITING.pop(caretaker_id, None)
+
+
+#: Words that are part of a name in the database but carry no identity - a
+#: seeded tag, or the honorifics a family actually types.
+_NAME_NOISE = {"demo", "test", "ji", "jee", "sahib", "sahiba", "baji", "bhai",
+               "amma", "ammi", "abbu", "aunty", "uncle", "mr", "mrs", "miss"}
+#: Below this, two names are different people. 0.82 accepts "jaani" for "Jani"
+#: and "zubaidah" for "Zubaida", and rejects "Affan" against "Adnan".
+_NAME_FUZZ = 0.82
+
+
+def _name_tokens(name: str) -> list[str]:
+    """The parts of a stored name that actually identify somebody."""
+    words = re.findall(r"[^\W\d_]+", (name or "").lower(), re.UNICODE)
+    return [w for w in words if len(w) > 2 and w not in _NAME_NOISE]
+
+
 def _pick(patients: list[dict], text: str) -> dict | None:
-    """Which patient the caretaker means. One patient needs no naming."""
+    """Which patient the caretaker means. One patient needs no naming.
+
+    Real caretakers do not type the name as it is stored. Observed on a live
+    phone: the agent asked "Kis ke baare mein? Affan Jani, Zubaida Bibi" and
+    the reply "Affan jaani" matched nothing, because the old rule looked for
+    the WHOLE stored name as a substring - so a first name alone failed, and
+    one extra letter failed. Three passes now, loosest last:
+
+    1. the full stored name appears in the message
+    2. any identifying part of it appears as a whole word ("Affan")
+    3. a part is close enough to survive spelling drift ("jaani" -> "Jani")
+
+    **Ambiguity returns None on purpose.** If two patients match, asking again
+    costs one message; guessing could pause the wrong person's reminders.
+    """
     if not patients:
         return None
     if len(patients) == 1:
         return patients[0]
+
     lowered = (text or "").lower()
+    said = re.findall(r"[^\W\d_]+", lowered, re.UNICODE)
+
+    exact = [p for p in patients if p["name"].lower() in lowered]
+    if len(exact) == 1:
+        return exact[0]
+
+    whole_word = [p for p in patients
+                  if any(tok in said for tok in _name_tokens(p["name"]))]
+    if len(whole_word) == 1:
+        return whole_word[0]
+
+    close = []
     for p in patients:
-        if p["name"].lower() in lowered:
-            return p
+        tokens = _name_tokens(p["name"])
+        if any(SequenceMatcher(None, tok, word).ratio() >= _NAME_FUZZ
+               for tok in tokens for word in said if len(word) > 2):
+            close.append(p)
+    if len(close) == 1:
+        return close[0]
+
     return None
+
+
+def names_someone(patients: list[dict], text: str) -> bool:
+    """Whether the message mentions a patient at all, even an ambiguous one.
+
+    Tells "Affan" - a name we recognise but could not pin to one row - apart
+    from "xyz123", which is not a name. The two deserve different replies.
+    """
+    said = re.findall(r"[^\W\d_]+", (text or "").lower(), re.UNICODE)
+    for patient in patients:
+        for token in _name_tokens(patient["name"]):
+            if token in said:
+                return True
+            if any(SequenceMatcher(None, token, word).ratio() >= _NAME_FUZZ
+                   for word in said if len(word) > 2):
+                return True
+    return False
 
 
 def _today_lines(patient_id: str, lang: str) -> tuple[int, int, str]:
@@ -282,19 +387,40 @@ async def handle(text: str, caretaker: dict) -> None:
             kind = "other"
 
     patient = _pick(patients, f"{text} {named or ''}")
+
+    # They are answering "which patient?". A bare name is not a command, so
+    # without this the reply falls through to "samajh nahi aaya" and the
+    # conversation deadlocks - which is exactly what happened on a real phone.
+    pending = _pending_question(caretaker["id"])
+    if pending and kind in (None, "other") and patient is not None:
+        log.info("caretaker %s answered the pending %s question with %s",
+                 caretaker["id"], pending, patient["name"])
+        kind = pending
+        _forget_question(caretaker["id"])
+
     log.info("caretaker %s: kind=%s patient=%s",
              caretaker["id"], kind, patient["name"] if patient else None)
 
     if kind == "clinical":
         # Being the carer does not make the agent a doctor (invariant 8).
+        _forget_question(caretaker["id"])
         await say("care_refusal", patient=patient["name"] if patient else "unhein")
         return
 
     if kind == "help":
+        _forget_question(caretaker["id"])
         await say("care_help")
         return
 
     if kind in ("status", "pause", "resume") and patient is None:
+        # Remember what we are waiting for, so the answer can complete it.
+        _remember_question(caretaker["id"], kind)
+        if names_someone(patients, f"{text} {named or ''}"):
+            # They DID name somebody, we just could not tell which - never
+            # guess, because guessing pauses the wrong person's reminders.
+            await say("care_which_patient_again",
+                      names=", ".join(p["name"] for p in patients))
+            return
         await say("care_which_patient",
                   names=", ".join(p["name"] for p in patients))
         return
@@ -322,6 +448,16 @@ async def handle(text: str, caretaker: dict) -> None:
         except Exception as exc:  # noqa: BLE001 - the ticker will catch up
             log.warning("materialisation after resume failed: %s", exc)
         await say("care_resumed", patient=patient["name"])
+        return
+
+    # A name on its own, with nothing pending. We know WHO but not WHAT, so
+    # ask for the missing half rather than pretending not to recognise them.
+    if patient is not None and kind in (None, "other"):
+        await say("care_which_command", patient=patient["name"])
+        return
+    if names_someone(patients, text) and kind in (None, "other"):
+        await say("care_which_patient_again",
+                  names=", ".join(p["name"] for p in patients))
         return
 
     # Nothing matched. Spend the key pool on a reply that at least points them

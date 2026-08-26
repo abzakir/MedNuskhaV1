@@ -376,6 +376,71 @@ push at the end of every phase**, one commit per phase, `feat(scope): ...` per
 
 ## Decisions log
 
+### 2026-08-26 — Session 11 (the caretaker conversation deadlock)
+
+**Found on a real phone, by a real caretaker.** usman sent `status`, the agent
+asked "Kis ke baare mein? Affan Jani, Zubaida Bibi [demo]", he answered
+"Affan jaani" — and got "samajh nahi aaya". Then "Affan". Same. The agent asked
+a question it could not accept the answer to, and the conversation deadlocked
+permanently.
+
+**Two independent faults, either of which alone would have caused it:**
+
+1. **`_pick` matched only the WHOLE stored name as a substring.** "Affan Jani"
+   is the row; `"affan jani" in "affan jaani"` is False, and so is
+   `"affan jani" in "affan"`. So a first name alone failed, and one extra
+   letter failed. Nobody types a name the way a database stores it.
+2. **Nothing remembered that a question had been asked.** Every message was
+   interpreted standalone. A bare name matches no command regex, the model
+   classified it `other`, and it fell through to the unclear branch — which is
+   correct behaviour for a message with no context, and useless here.
+
+**The fix:**
+
+- `_pick` now runs three passes, loosest last: full name, then any identifying
+  word ("Affan"), then a fuzzy match for spelling drift ("jaani" → "Jani", at a
+  0.82 ratio, which accepts that and rejects "Adnan"). Honorifics and the
+  `[demo]` tag are stripped as non-identifying.
+- **Ambiguity still returns None, deliberately.** If two patients match, it
+  asks again. Asking costs one message; guessing could pause the wrong
+  person's reminders.
+- A short-lived `_AWAITING` map remembers which command is waiting on a name,
+  for 10 minutes. When the next message names a patient and matches no command,
+  it completes the pending one.
+- A name arriving with **nothing** pending now gets "what about Affan Jani?"
+  plus the three commands, rather than a shrug. We knew who, just not what.
+- A name we recognise but cannot pin down gets a distinct reply asking for the
+  full name — different from "I did not understand you".
+
+**Key decisions:**
+
+- **The pending question lives in memory, not the database.** §8 froze the
+  schema and this is worth ten minutes of state, not a migration. One process
+  holds the scheduler advisory lock so there is exactly one of these. A restart
+  loses a half-finished question, which costs the caretaker one extra word.
+- **10-minute TTL.** Long enough to walk to the kitchen and answer; short
+  enough that tomorrow's "Affan" is not read as an answer to today's question.
+  Pinned by a test that expires the entry and checks it is dropped.
+- **Clinical and help clear the pending question.** Otherwise a refusal
+  followed by a name would silently run the command that was pending before it.
+
+**Two test-suite repairs, neither a product bug:**
+
+- `verify_caretaker.py` assumed the caretaker had exactly ONE patient, so bare
+  `status` returned a report. `make seed` attached the demo patient to the most
+  recent caretaker, giving usman two — so `status` correctly asked which one
+  and four checks failed. The suite now names a patient when there is more than
+  one, and is agnostic to how many there are.
+- `verify_agent.py` deleted the shared `panadol` reference row on cleanup.
+  Reference rows are **one per medicine name across the whole system**, so once
+  `make seed` created a real Panadol the delete hit a ForeignKeyViolation. It
+  now only deletes a row nothing else references, and otherwise just clears its
+  `confirmed_by` link.
+
+**Before touching this area next:** `_pick` returning None is a feature. Every
+loosening of it must keep the "two matches means ask, never guess" rule — the
+blast radius of picking the wrong patient is somebody's medication.
+
 ### 2026-08-24 — Session 10 (Phase 8: the parts that are not the deploy)
 
 **Done:** `Dockerfile` for the backend, `whatsapp-bridge/Dockerfile`,

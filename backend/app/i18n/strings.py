@@ -124,6 +124,26 @@ STRINGS: dict[str, dict[str, str]] = {
         "ur": "Kis ke baare mein? {names}",
         "en": "Which one? {names}",
     },
+    #: They named somebody, but not clearly enough to be sure which. Asking
+    #: again costs one message; guessing could pause the wrong person's
+    #: reminders, so the wording says plainly that the name was not clear.
+    "care_which_patient_again": {
+        "ur": ("Naam theek se samajh nahi aaya. Poora naam likh dein: {names}"),
+        "en": ("I couldn't tell which name that was. Please write it in full: "
+               "{names}"),
+    },
+    #: We know WHO but not WHAT. A caretaker who sends just a name is halfway
+    #: to a command - ask for the other half rather than for everything again.
+    "care_which_command": {
+        "ur": ("{patient} ke baare mein kya karna hai?\n"
+               "- status : aaj ki report\n"
+               "- rok dein : yaad-dahani band\n"
+               "- shuru karein : dobara chalu"),
+        "en": ("What about {patient}?\n"
+               "- status : today's report\n"
+               "- pause : stop reminders\n"
+               "- resume : start them again"),
+    },
     "care_unclear": {
         "ur": ("Maaf kijiye ga, samajh nahi aaya. \"help\" likhein to main "
                "bata dun ke kya likh sakte hain."),

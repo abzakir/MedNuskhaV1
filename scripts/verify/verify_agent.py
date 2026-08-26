@@ -49,9 +49,23 @@ def cleanup():
     with session_scope() as s:
         # medicine_reference.confirmed_by points at a caretaker, so these go
         # first or the caretaker delete violates the FK.
+        #
+        # A reference row is SHARED - one per medicine name across the whole
+        # system - so it may well belong to somebody else by now. Since
+        # `make seed` started creating a real Panadol, deleting it blindly
+        # raised a ForeignKeyViolation from the demo patient's medicine. Only
+        # remove a row nothing else is using.
         for r in s.exec(select(MedicineReference).where(
                 MedicineReference.canonical_name.in_(["ziptest", "panadol"]))).all():
-            s.delete(r)
+            still_used = s.exec(
+                select(Medicine).where(Medicine.reference_id == r.id)).first()
+            if still_used is None:
+                s.delete(r)
+            else:
+                # Leave the row, but drop our caretaker link so the caretaker
+                # delete below still succeeds.
+                r.confirmed_by = None
+                s.add(r)
         s.commit()
 
         fam_ids = set()

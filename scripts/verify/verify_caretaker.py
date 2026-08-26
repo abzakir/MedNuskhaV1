@@ -50,9 +50,16 @@ print(f"caretaker: {CARE['name']} on {CARE['phone']}")
 print(f"patients : {[p[1] for p in PATIENTS]}\n")
 
 
-async def send(text):
+#: A caretaker with more than one patient is asked WHICH one - correctly, and
+#: since 2026-08-26 the agent can accept the answer. These checks are about the
+#: commands themselves, so they name the patient up front and stay valid
+#: however many people this caretaker looks after.
+WHO = f" {PATIENTS[0][1]}" if len(PATIENTS) > 1 else ""
+
+
+async def send(text, name_patient=True):
     SENT.clear()
-    await care.handle(text, CARE)
+    await care.handle(text + (WHO if name_patient else ""), CARE)
     return SENT[-1]["body"] if SENT else ""
 
 
@@ -90,14 +97,14 @@ async def main() -> int:
         check("patient is running again", p.stopped is False, p.stopped)
 
     print("\n=== a clinical question from the CARETAKER is still refused")
-    body = await send("can I give her two tablets tonight?")
+    body = await send("can I give her two tablets tonight?", name_patient=False)
     print(f"     {body[:160]}")
     check("refused, not answered",
           "faisla" in body.lower() or "doctor" in body.lower(), body[:100])
     check("points at the doctor", "doctor" in body.lower(), body[:100])
 
     print("\n=== an unrelated message")
-    body = await send("hello there my friend")
+    body = await send("hello there my friend", name_patient=False)
     check("offers help rather than guessing",
           "help" in body.lower() or "samajh" in body.lower(), body[:100])
 
