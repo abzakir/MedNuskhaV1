@@ -22,13 +22,47 @@ import {
   authConfigured,
   getAuthSettings,
   getSession,
+  requestPasswordReset,
+  resendSignupCode,
   signInWithEmail,
   signInWithGoogle,
   signUpWithEmail,
+  verifySignupCode,
   type AuthSettings,
 } from "@/lib/supabase";
 
-type Mode = "in" | "up";
+/**
+ * "in"     sign in
+ * "up"     create an account
+ * "verify" type the six-digit code we just emailed
+ * "forgot" ask for a password reset link
+ *
+ * All four live on one screen. Signing up, confirming and resetting are one
+ * continuous job for the person doing them, and sending them to another page
+ * loses the email address they have already typed.
+ */
+type Mode = "in" | "up" | "verify" | "forgot";
+
+const HEADING: Record<Mode, string> = {
+  in: "Welcome back",
+  up: "Create your caretaker account",
+  verify: "Check your email",
+  forgot: "Reset your password",
+};
+
+const SUBHEADING: Record<Mode, string> = {
+  in: "Sign in to look after your family.",
+  up: "Set up medicine reminders for someone you care about.",
+  verify: "",
+  forgot: "We'll email you a link to set a new one.",
+};
+
+const SUBMIT: Record<Mode, string> = {
+  in: "Sign in",
+  up: "Create account",
+  verify: "Confirm and continue",
+  forgot: "Email me a reset link",
+};
 
 export default function LoginPage() {
   const router = useRouter();
@@ -41,6 +75,8 @@ export default function LoginPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [settings, setSettings] = useState<AuthSettings | null>(null);
   const [googleBusy, setGoogleBusy] = useState(false);
+  const [code, setCode] = useState("");
+  const [resending, setResending] = useState(false);
 
   useEffect(() => {
     getSession().then((s) => {
@@ -50,6 +86,8 @@ export default function LoginPage() {
   }, [router]);
 
   const needsEmailConfirmation = settings ? !settings.autoconfirm : false;
+  /** Sign in and sign up are a choice; verify and forgot are steps within one. */
+  const isChoice = mode === "in" || mode === "up";
 
   async function withGoogle() {
     setGoogleBusy(true);
@@ -61,6 +99,19 @@ export default function LoginPage() {
     } catch (e) {
       setError((e as Error).message);
       setGoogleBusy(false);
+    }
+  }
+
+  async function resend() {
+    setResending(true);
+    setError(null);
+    try {
+      await resendSignupCode(email);
+      setNotice(`A new code is on its way to ${email}.`);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setResending(false);
     }
   }
 
@@ -78,15 +129,34 @@ export default function LoginPage() {
     try {
       if (mode === "up") {
         await signUpWithEmail(email, password, name);
+
+        // Autoconfirm on means the account is usable immediately and
+        // signUp already returned a session - no code, no waiting.
         const session = await getSession();
         if (session) {
           router.push("/dashboard");
           return;
         }
-        setNotice(
-          "Account created. Check your inbox for the confirmation link, then sign in.",
-        );
+        setCode("");
+        setMode("verify");
+        setNotice(`We've emailed a six-digit code to ${email}.`);
+      } else if (mode === "verify") {
+        const session = await verifySignupCode(email, code);
+        if (session) {
+          router.push("/dashboard");
+          return;
+        }
+        // Confirmed but no session: sign in with the password they just set.
+        await signInWithEmail(email, password);
+        router.push("/dashboard");
+      } else if (mode === "forgot") {
+        await requestPasswordReset(email);
+        // Deliberately the same answer whether or not that address exists.
         setMode("in");
+        setNotice(
+          `If ${email} has an account, a reset link is on its way. ` +
+            "It's good for one hour.",
+        );
       } else {
         await signInWithEmail(email, password);
         router.push("/dashboard");
@@ -129,23 +199,35 @@ export default function LoginPage() {
 
         <div className="rounded-xl border bg-card p-6 shadow-lift">
           {/* Both options visible at once - a new caretaker should not have to
-              hunt for sign-up inside a sentence. */}
-          <div className="mb-6 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
-            <TabButton active={mode === "in"} onClick={() => switchTo("in")}>
-              Sign in
-            </TabButton>
-            <TabButton active={mode === "up"} onClick={() => switchTo("up")}>
-              Sign up
-            </TabButton>
-          </div>
+              hunt for sign-up inside a sentence. Hidden during verify and
+              forgot: those are steps in a job already started, not a choice
+              between two doors. */}
+          {isChoice && (
+            <div className="mb-6 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
+              <TabButton active={mode === "in"} onClick={() => switchTo("in")}>
+                Sign in
+              </TabButton>
+              <TabButton active={mode === "up"} onClick={() => switchTo("up")}>
+                Sign up
+              </TabButton>
+            </div>
+          )}
 
-          <h2 className="text-lg font-medium">
-            {mode === "in" ? "Welcome back" : "Create your caretaker account"}
-          </h2>
+          {!isChoice && (
+            <button
+              type="button"
+              onClick={() => switchTo("in")}
+              className="mb-4 text-sm text-muted-foreground transition-colors hover:text-foreground"
+            >
+              &larr; Back to sign in
+            </button>
+          )}
+
+          <h2 className="text-lg font-medium">{HEADING[mode]}</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            {mode === "in"
-              ? "Sign in to look after your family."
-              : "Set up medicine reminders for someone you care about."}
+            {mode === "verify"
+              ? `Enter the six digits we sent to ${email}.`
+              : SUBHEADING[mode]}
           </p>
 
           {!authConfigured && (
@@ -155,7 +237,7 @@ export default function LoginPage() {
             </p>
           )}
 
-          {settings?.providers.google && (
+          {settings?.providers.google && isChoice && (
             <>
               <button
                 type="button"
@@ -183,7 +265,7 @@ export default function LoginPage() {
             </>
           )}
 
-          <form onSubmit={submit} className={settings?.providers.google ? "space-y-4" : "mt-5 space-y-4"}>
+          <form onSubmit={submit} className={settings?.providers.google && isChoice ? "space-y-4" : "mt-5 space-y-4"}>
             {mode === "up" && (
               <div className="space-y-1.5">
                 <Label htmlFor="name">Your name</Label>
@@ -201,6 +283,34 @@ export default function LoginPage() {
               </div>
             )}
 
+            {mode === "verify" && (
+              <div className="space-y-1.5">
+                <Label htmlFor="code">Confirmation code</Label>
+                <Input
+                  id="code"
+                  value={code}
+                  onChange={(e) =>
+                    setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+                  }
+                  placeholder="123456"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  required
+                  autoFocus
+                  className="text-center font-mono text-2xl tracking-[0.4em]"
+                />
+                <button
+                  type="button"
+                  onClick={resend}
+                  disabled={resending}
+                  className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline disabled:opacity-60"
+                >
+                  {resending ? "Sending…" : "Didn't get it? Send another"}
+                </button>
+              </div>
+            )}
+
+            {mode !== "verify" && (
             <div className="space-y-1.5">
               <Label htmlFor="email">Email</Label>
               <Input
@@ -213,9 +323,22 @@ export default function LoginPage() {
                 autoComplete="email"
               />
             </div>
+            )}
 
+            {mode !== "forgot" && mode !== "verify" && (
             <div className="space-y-1.5">
-              <Label htmlFor="password">Password</Label>
+              <div className="flex items-baseline justify-between">
+                <Label htmlFor="password">Password</Label>
+                {mode === "in" && authConfigured && (
+                  <button
+                    type="button"
+                    onClick={() => switchTo("forgot")}
+                    className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                  >
+                    Forgot password?
+                  </button>
+                )}
+              </div>
               <Input
                 id="password"
                 type="password"
@@ -227,6 +350,7 @@ export default function LoginPage() {
                 autoComplete={mode === "in" ? "current-password" : "new-password"}
               />
             </div>
+            )}
 
             {error && (
               <p className="rounded-lg bg-missed-soft p-3 text-sm text-missed">
@@ -240,17 +364,13 @@ export default function LoginPage() {
             )}
             {mode === "up" && needsEmailConfirmation && (
               <p className="rounded-lg bg-live-soft p-3 text-xs text-live">
-                This project requires email confirmation, so you&apos;ll get a link
-                before you can sign in. Use a real address.
+                We&apos;ll email you a six-digit code to confirm this address, so
+                use a real one.
               </p>
             )}
 
             <Button type="submit" className="w-full" disabled={busy || !authConfigured}>
-              {busy
-                ? "Please wait…"
-                : mode === "in"
-                  ? "Sign in"
-                  : "Create account"}
+              {busy ? "Please wait…" : SUBMIT[mode]}
             </Button>
           </form>
 

@@ -44,6 +44,59 @@ export async function signUpWithEmail(email: string, password: string, name: str
 }
 
 /**
+ * Confirm a new account with the six-digit code from the email.
+ *
+ * A code rather than a link, deliberately. A caretaker signing up on their
+ * phone gets an email whose link opens whichever browser their mail app
+ * prefers - often not the one holding the half-finished sign-up - and the
+ * session lands in the wrong place. A code is typed back into the page they
+ * are already looking at.
+ *
+ * Succeeding here returns a live session, so the caller can go straight to
+ * the dashboard rather than asking them to sign in again with the password
+ * they typed ninety seconds ago.
+ */
+export async function verifySignupCode(email: string, code: string) {
+  const { data, error } = await supabase.auth.verifyOtp({
+    email,
+    token: code.trim(),
+    type: "signup",
+  });
+  if (error) throw new Error(friendly(error.message));
+  return data.session;
+}
+
+/** Send the confirmation code again. Supabase rate-limits this; say so. */
+export async function resendSignupCode(email: string) {
+  const { error } = await supabase.auth.resend({ type: "signup", email });
+  if (error) throw new Error(friendly(error.message));
+}
+
+/**
+ * Start a password reset. Always resolves, even for an unknown address.
+ *
+ * Supabase deliberately does not say whether an account exists, and neither
+ * do we: "if that address has an account, a link is on its way" tells a
+ * legitimate user everything they need and tells someone probing for
+ * registered addresses nothing.
+ */
+export async function requestPasswordReset(email: string) {
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${window.location.origin}/reset-password`,
+  });
+  if (error) throw new Error(friendly(error.message));
+}
+
+/**
+ * Set a new password. Only works while a recovery session is open - which is
+ * what the emailed link creates, via detectSessionInUrl above.
+ */
+export async function updatePassword(password: string) {
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error) throw new Error(friendly(error.message));
+}
+
+/**
  * Which sign-in methods this Supabase project actually has switched on.
  *
  * Worth asking, because signInWithOAuth NAVIGATES the browser to Supabase. If
@@ -109,6 +162,18 @@ function friendly(message: string): string {
   if (m.includes("provider is not enabled"))
     return "Google sign-in isn't enabled yet. Turn it on in Supabase → Authentication → Providers, or use email instead.";
   if (m.includes("email not confirmed"))
-    return "Check your email for the confirmation link, or disable email confirmation in Supabase → Authentication → Providers → Email.";
+    return "This account still needs confirming. Check your email for the code we sent.";
+  if (m.includes("token has expired") || m.includes("expired"))
+    return "That code has expired. Ask for a new one.";
+  if (m.includes("invalid") && m.includes("token"))
+    return "That code isn't right. Check the email again — it's six digits.";
+  if (m.includes("otp_expired")) return "That code has expired. Ask for a new one.";
+  if (m.includes("for security purposes") || m.includes("rate limit") ||
+      m.includes("too many"))
+    return "That was a lot of tries in a row. Wait a minute, then try again.";
+  if (m.includes("same password"))
+    return "That's the password you already have — pick a different one.";
+  if (m.includes("auth session missing") || m.includes("session_not_found"))
+    return "This reset link has expired. Ask for a new one from the sign-in page.";
   return message;
 }
