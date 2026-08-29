@@ -79,10 +79,16 @@ app = FastAPI(
 
 # The dashboard is served from a different origin (localhost:3000 in dev,
 # Vercel in production), so it needs CORS. The WhatsApp webhook is called
-# server-to-server by Meta and is unaffected.
+# server-to-server by the bridge and is unaffected.
+#
+# `*` is the default and is safe here as it stands: the dashboard authenticates
+# with a Bearer token in a header, never a cookie, and allow_credentials stays
+# False - so a hostile page can make a request but has nothing to send with it.
+# Set CORS_ORIGINS to the dashboard's real URL in production anyway; there is
+# no reason for any other origin to be calling this API.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

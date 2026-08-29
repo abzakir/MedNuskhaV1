@@ -179,6 +179,7 @@ live Groq and the live bridge — they are how each phase was actually proven.
 ## Deployment
 
 The dashboard goes to Vercel; the backend and bridge go on one small box.
+**Step-by-step for Oracle Cloud (free) + Vercel: see [DEPLOY.md](DEPLOY.md).**
 
 ### Backend + bridge
 

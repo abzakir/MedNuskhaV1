@@ -1,0 +1,48 @@
+# Keeps the build context small, and keeps secrets out of it.
+#
+# Both Dockerfiles copy explicit paths (backend/app, index.js) rather than
+# `COPY . .`, so nothing below is in an image today. This file is the second
+# line of defence: the day somebody adds a `COPY . .`, a real WhatsApp session
+# and a .env full of credentials would otherwise walk straight into a layer.
+#
+# It is also a large speed win. Without it the context is ~1.1GB - two
+# virtualenvs, two node_modules trees and the git history - all of it sent to
+# the Docker daemon on every single build.
+
+# --- secrets. never in an image, never in a layer cache ---
+.env
+.env.*
+!.env.example
+# A real WhatsApp login. Anyone holding this folder can read the account's
+# messages. It belongs in a mounted volume, never in an image.
+whatsapp-bridge/auth_info/
+
+# --- dependencies, rebuilt inside the image ---
+backend/.venv/
+**/node_modules/
+**/__pycache__/
+**/*.pyc
+
+# --- build output and caches ---
+frontend/.next/
+frontend/out/
+backend/.pytest_cache/
+backend/.voice-cache/
+.cache/
+**/.DS_Store
+
+# --- not needed at runtime ---
+.git/
+.github/
+.gitignore
+.gitattributes
+*.md
+!README.md
+*.pdf
+scripts/verify/
+backend/tests/
+.claude/
+*.log
+
+# --- the dashboard is not in either image; it deploys to Vercel ---
+frontend/

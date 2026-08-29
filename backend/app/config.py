@@ -106,6 +106,18 @@ class Settings(BaseSettings):
     #: warning every time it is used, and must be false in production.
     dev_auth_bypass: bool = False
 
+    #: Which origins the dashboard may call the API from. Comma-separated;
+    #: "*" allows any. The default is deliberately permissive because the
+    #: dashboard authenticates with a header token rather than a cookie, so
+    #: a hostile origin has nothing to send - but naming the real URL in
+    #: production costs nothing and closes the door properly.
+    cors_allow_origins: str = "*"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def cors_origins(self) -> list[str]:
+        return self._split(self.cors_allow_origins) or ["*"]
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def sqlalchemy_url(self) -> str:
