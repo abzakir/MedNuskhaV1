@@ -3,11 +3,14 @@
 /**
  * Caretaker sign-in and sign-up.
  *
- * Email and password only. Google was deliberately dropped for the hackathon:
- * it needs a Google Cloud OAuth client, and the sign-in method is not what the
- * product is being judged on. The provider check in lib/supabase.ts remains,
- * so switching it back on later is a Supabase setting rather than a code
- * change.
+ * Email and password, plus Google when the project has it switched on.
+ *
+ * The Google button is CONDITIONAL on the live provider list from
+ * /auth/v1/settings, not always rendered. signInWithOAuth navigates the
+ * browser away to Supabase, so when the provider is off there is no promise
+ * left in our code to catch the failure - the caretaker just lands on a raw
+ * JSON page reading {"code":400,...,"provider is not enabled"}. A button that
+ * cannot work is worse than no button, so it only appears once it can.
  */
 
 import { useEffect, useState } from "react";
@@ -20,6 +23,7 @@ import {
   getAuthSettings,
   getSession,
   signInWithEmail,
+  signInWithGoogle,
   signUpWithEmail,
   type AuthSettings,
 } from "@/lib/supabase";
@@ -36,6 +40,7 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [settings, setSettings] = useState<AuthSettings | null>(null);
+  const [googleBusy, setGoogleBusy] = useState(false);
 
   useEffect(() => {
     getSession().then((s) => {
@@ -45,6 +50,19 @@ export default function LoginPage() {
   }, [router]);
 
   const needsEmailConfirmation = settings ? !settings.autoconfirm : false;
+
+  async function withGoogle() {
+    setGoogleBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      // On success this never returns - the browser leaves for Google.
+      await signInWithGoogle();
+    } catch (e) {
+      setError((e as Error).message);
+      setGoogleBusy(false);
+    }
+  }
 
   function switchTo(next: Mode) {
     setMode(next);
@@ -137,7 +155,35 @@ export default function LoginPage() {
             </p>
           )}
 
-          <form onSubmit={submit} className="mt-5 space-y-4">
+          {settings?.providers.google && (
+            <>
+              <button
+                type="button"
+                onClick={withGoogle}
+                disabled={googleBusy || busy}
+                className="mt-5 flex w-full items-center justify-center gap-2.5 rounded-md border
+                           border-input bg-card px-4 py-2.5 text-sm font-medium
+                           transition-colors hover:bg-muted
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
+                           focus-visible:ring-offset-2 disabled:opacity-60"
+              >
+                <GoogleMark />
+                {googleBusy
+                  ? "Taking you to Google…"
+                  : mode === "in"
+                    ? "Sign in with Google"
+                    : "Sign up with Google"}
+              </button>
+
+              <div className="my-5 flex items-center gap-3">
+                <span className="h-px flex-1 bg-border" />
+                <span className="text-xs text-muted-foreground">or use email</span>
+                <span className="h-px flex-1 bg-border" />
+              </div>
+            </>
+          )}
+
+          <form onSubmit={submit} className={settings?.providers.google ? "space-y-4" : "mt-5 space-y-4"}>
             {mode === "up" && (
               <div className="space-y-1.5">
                 <Label htmlFor="name">Your name</Label>
@@ -250,5 +296,35 @@ function TabButton({
     >
       {children}
     </button>
+  );
+}
+
+/**
+ * Google's four-colour G, inline.
+ *
+ * Drawn here rather than fetched: the artwork is fixed, and an <img> to a CDN
+ * is one more thing that can be slow or blocked on the morning of a demo.
+ * These are Google's own brand hex values and must not be re-tinted.
+ */
+function GoogleMark() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 48 48" aria-hidden focusable="false">
+      <path
+        fill="#4285F4"
+        d="M45.12 24.5c0-1.56-.14-3.06-.4-4.5H24v8.51h11.84c-.51 2.75-2.06 5.08-4.39 6.64v5.52h7.11c4.16-3.83 6.56-9.47 6.56-16.17z"
+      />
+      <path
+        fill="#34A853"
+        d="M24 46c5.94 0 10.92-1.97 14.56-5.33l-7.11-5.52c-1.97 1.32-4.49 2.1-7.45 2.1-5.73 0-10.58-3.87-12.31-9.07H4.34v5.7C7.96 41.07 15.4 46 24 46z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M11.69 28.18C11.25 26.86 11 25.45 11 24s.25-2.86.69-4.18v-5.7H4.34C2.85 17.09 2 20.45 2 24s.85 6.91 2.34 9.88l7.35-5.7z"
+      />
+      <path
+        fill="#EA4335"
+        d="M24 10.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 4.18 29.93 2 24 2 15.4 2 7.96 6.93 4.34 14.12l7.35 5.7c1.73-5.2 6.58-9.07 12.31-9.07z"
+      />
+    </svg>
   );
 }

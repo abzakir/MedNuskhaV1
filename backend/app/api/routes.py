@@ -68,6 +68,27 @@ def _decode(token: str) -> dict:
         raise HTTPException(401, "invalid or expired session") from exc
 
 
+def _display_name(claims: dict) -> str | None:
+    """The caretaker's name out of a Supabase JWT, whoever signed them in.
+
+    Email sign-up puts the typed name in `full_name`. Google fills the same
+    field, but also `name`, and other providers set only one or the other -
+    so all of them are tried rather than assuming the shape of one. Falling
+    through to None is fine: `_find_or_create` derives a name from the email.
+
+    The caretaker's name is not decoration. It is spoken to the patient
+    ("aap ke bete Usman ne...") and printed on the caretaker report, so an
+    account that lands with a blank name is a message that reads oddly to a
+    68-year-old.
+    """
+    meta = claims.get("user_metadata") or {}
+    for key in ("full_name", "name", "preferred_username"):
+        value = (meta.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
 def _find_or_create(session: Session, *, auth_id: str, email: str | None,
                     name: str | None) -> Caretaker:
     """Map a Supabase account to a caretaker row, creating it on first login.
@@ -133,7 +154,7 @@ def current_caretaker(request: Request,
             session,
             auth_id=claims["sub"],
             email=claims.get("email"),
-            name=(claims.get("user_metadata") or {}).get("full_name"),
+            name=_display_name(claims),
         )
 
     # Dev bypass (§4.1). Off unless explicitly enabled, and it says so loudly.
