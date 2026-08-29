@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { MedicineCard } from "@/components/medicine-card";
 import { DoseChart } from "@/components/dose-chart";
+import { PatientContact } from "@/components/patient-contact";
 import { StatusPill, AdherenceNumber } from "@/components/status-pill";
 import {
   api,
@@ -111,10 +112,13 @@ export default function PatientPage() {
               <span aria-hidden className="text-border">
                 &middot;
               </span>
-              <span className={patient.opted_in ? "text-taken" : undefined}>
+              <span className={patient.opted_in ? "text-taken" : "text-late"}>
                 {patient.opted_in ? "on WhatsApp" : "not opted in yet"}
               </span>
             </p>
+            <div className="mt-2">
+              <PatientContact patient={patient} onSaved={loadPatient} />
+            </div>
           </div>
 
           <div className="flex items-center gap-2">

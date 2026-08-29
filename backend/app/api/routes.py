@@ -469,6 +469,101 @@ def create_patient(body: PatientIn,
             "whatsapp_number": patient.whatsapp_number}
 
 
+class PatientEdit(BaseModel):
+    """Only the two things that are genuinely wrong sometimes."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    whatsapp_number: str | None = None
+    language: str | None = None
+
+    @field_validator("whatsapp_number")
+    @classmethod
+    def _clean_number(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = normalise_number(value)
+        if not cleaned or not cleaned.isdigit() or len(cleaned) < 10:
+            raise ValueError("that doesn't look like a WhatsApp number")
+        return cleaned
+
+
+@router.patch("/patients/{patient_id}")
+def update_patient(patient_id: str, body: PatientEdit,
+                   caretaker: Caretaker = Depends(current_caretaker),
+                   session: Session = Depends(get_session)) -> dict:
+    """Correct a patient's name, number or language.
+
+    A mistyped number is the most common real mistake in this product, and
+    until now the only cure was deleting the patient and starting again -
+    which throws away every dose, every reply and both reports.
+
+    **Changing the number resets the opt-in.** A different number is a
+    different handset, belonging to somebody who has not agreed to anything.
+    Section 4.4 forbids sending a reminder to a patient who has not opted in,
+    so the new number gets the intro message and has to answer it before
+    anything else is sent. Without this, correcting a typo would start
+    delivering a stranger's medical reminders to whoever owns that number.
+
+    Doses already sent are left exactly as they are - they are history, and
+    the reports are made of them. Future ones need no work: the ticker reads
+    the number at send time.
+    """
+    patient = _owned_patient(patient_id, caretaker, session)
+    changed: list[str] = []
+    number_changed = False
+
+    if body.name is not None and body.name.strip() != patient.name:
+        patient.name = body.name.strip()
+        changed.append("name")
+
+    if body.language is not None and body.language != patient.language:
+        if body.language not in ("ur", "en"):
+            raise HTTPException(422, "language must be 'ur' or 'en'")
+        patient.language = body.language
+        changed.append("language")
+
+    if body.whatsapp_number and body.whatsapp_number != patient.whatsapp_number:
+        clash = session.exec(
+            select(Patient)
+            .where(Patient.whatsapp_number == body.whatsapp_number)
+            .where(Patient.id != patient.id)).first()
+        if clash:
+            # Deliberately vague about who: it may be another family's patient.
+            raise HTTPException(
+                409, "That WhatsApp number is already registered to someone else.")
+
+        patient.whatsapp_number = body.whatsapp_number
+        patient.opted_in = False
+        patient.opted_in_at = None
+        changed.append("whatsapp_number")
+        number_changed = True
+
+    if not changed:
+        return _patient_contact(patient, number_changed=False)
+
+    session.add(patient)
+    session.commit()
+    session.refresh(patient)
+
+    log.info("caretaker %s updated patient %s (%s)",
+             caretaker.id, patient_id, ", ".join(changed))
+    return _patient_contact(patient, number_changed=number_changed)
+
+
+def _patient_contact(patient: Patient, *, number_changed: bool) -> dict:
+    return {
+        "id": patient.id,
+        "name": patient.name,
+        "whatsapp_number": patient.whatsapp_number,
+        "language": patient.language,
+        "opted_in": patient.opted_in,
+        "stopped": patient.stopped,
+        #: The dashboard uses this to say the new number needs an intro
+        #: message before any reminder will go to it.
+        "needs_optin": number_changed,
+    }
+
+
 @router.get("/patients/{patient_id}")
 def get_patient(patient_id: str,
                 caretaker: Caretaker = Depends(current_caretaker),

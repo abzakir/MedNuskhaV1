@@ -215,6 +215,17 @@ export type Today = {
   summary: { total: number; taken: number; missed: number; pending: number };
 };
 
+export type PatientContact = {
+  id: string;
+  name: string;
+  whatsapp_number: string;
+  language: string;
+  opted_in: boolean;
+  stopped: boolean;
+  /** True when the number changed: the new handset must opt in before we send. */
+  needs_optin: boolean;
+};
+
 export type History = {
   patient_id: string;
   days: number;
@@ -268,6 +279,12 @@ export const api = {
   /** Every dose over the last N days, for the adherence chart. */
   history: (id: string, days = 14) =>
     get<History>(`/api/patients/${id}/history?days=${days}`),
+
+  /** Correct a patient's name, WhatsApp number or language. */
+  updatePatient: (
+    id: string,
+    body: { name?: string; whatsapp_number?: string; language?: string },
+  ) => patch<PatientContact>(`/api/patients/${id}`, body),
 
   addPatient: (body: {
     name: string;
