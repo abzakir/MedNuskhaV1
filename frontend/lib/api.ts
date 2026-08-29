@@ -280,6 +280,30 @@ export const api = {
   history: (id: string, days = 14) =>
     get<History>(`/api/patients/${id}/history?days=${days}`),
 
+  /**
+   * Delete a patient and their whole history. Irreversible, and it releases
+   * their WhatsApp number so the same person can be added again later.
+   * `confirm` must be the patient's exact name.
+   */
+  deletePatient: (id: string, confirm: string) =>
+    del<{ deleted: boolean; name: string; number_released: string }>(
+      `/api/patients/${id}?confirm=${encodeURIComponent(confirm)}`,
+    ),
+
+  /**
+   * Delete this caretaker's own account. Takes their patients with it when
+   * nobody else is left in the family, and releases every number involved.
+   */
+  deleteMe: (confirm: string) =>
+    del<{
+      deleted: boolean;
+      name: string;
+      patients_removed: string[];
+      numbers_released: string[];
+      family_removed: boolean;
+      auth_deleted: boolean;
+    }>(`/api/me?confirm=${encodeURIComponent(confirm)}`),
+
   /** Correct a patient's name, WhatsApp number or language. */
   updatePatient: (
     id: string,

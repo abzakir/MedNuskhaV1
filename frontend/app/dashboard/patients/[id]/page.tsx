@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { MedicineCard } from "@/components/medicine-card";
 import { DoseChart } from "@/components/dose-chart";
 import { PatientContact } from "@/components/patient-contact";
+import { DeletePatient } from "@/components/danger-zone";
 import { StatusPill, AdherenceNumber } from "@/components/status-pill";
 import {
   api,
@@ -264,6 +265,14 @@ export default function PatientPage() {
           )}
         </div>
       </section>
+
+      {/* --------------------------------------------------- danger zone */}
+      <DeletePatient
+        patientId={patient.id}
+        name={patient.name}
+        number={patient.whatsapp_number}
+        doseCount={history?.doses.length ?? 0}
+      />
     </div>
   );
 }

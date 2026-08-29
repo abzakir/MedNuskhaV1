@@ -397,6 +397,98 @@ def update_me(body: ProfileIn,
     return get_me(caretaker, session)
 
 
+@router.delete("/me")
+def delete_me(confirm: str = Query(""),
+              caretaker: Caretaker = Depends(current_caretaker),
+              session: Session = Depends(get_session)) -> dict:
+    """Delete this caretaker's account and everything under it.
+
+    `confirm` must be the caretaker's own name, for the same reason the
+    patient delete asks for theirs.
+
+    Their patients go with them ONLY when nobody else is left in the family.
+    Two children can share the care of one parent (section 4.10); one of them
+    closing their account must not delete their mother, so the last one out
+    takes the family with them and the others simply lose a sibling.
+
+    **Both numbers are genuinely released.** `caretaker.phone` and
+    `patient.whatsapp_number` are UNIQUE, so anything short of deleting the
+    rows would leave those numbers claimed forever and the same family could
+    never sign up again.
+
+    What this cannot do is delete the Supabase login itself - that needs the
+    service key, which the backend deliberately does not hold. The account's
+    data is gone; signing in with the same email afterwards produces a new,
+    empty account rather than resurrecting this one. `auth_deleted` in the
+    response says which happened.
+    """
+    if confirm.strip() != caretaker.name:
+        raise HTTPException(
+            400, f"Type your name exactly ({caretaker.name}) to confirm.")
+
+    caretaker_id = caretaker.id
+    family_id = caretaker.family_id
+    name, phone, email = caretaker.name, caretaker.phone, caretaker.email
+
+    siblings = session.exec(
+        select(Caretaker).where(Caretaker.family_id == family_id)
+        .where(Caretaker.id != caretaker_id)).all()
+    last_one_out = not siblings
+
+    log.warning("caretaker %s (%s) is deleting their account; %d other(s) "
+                "in the family", caretaker_id, email, len(siblings))
+
+    # A confirmed reference row naming them blocks the delete. The knowledge
+    # itself stays - other families rely on it - only the attribution goes.
+    for reference in session.exec(
+            select(MedicineReference)
+            .where(MedicineReference.confirmed_by == caretaker_id)).all():
+        reference.confirmed_by = None
+        session.add(reference)
+    session.commit()
+
+    patients_removed: list[str] = []
+    numbers_released: list[str] = []
+    if last_one_out:
+        for patient in session.exec(
+                select(Patient).where(Patient.family_id == family_id)).all():
+            patients_removed.append(patient.name)
+            numbers_released.append(patient.whatsapp_number)
+            _erase_patient(session, patient)
+
+    # Escalation alerts addressed to this caretaker rather than to a patient
+    # still carry a foreign key to this row, and would block the delete.
+    for message in session.exec(
+            select(MessageLog).where(MessageLog.caretaker_id == caretaker_id)).all():
+        session.delete(message)
+    session.commit()
+
+    session.delete(caretaker)
+    session.commit()
+
+    if last_one_out:
+        family = session.get(Family, family_id)
+        if family is not None:
+            session.delete(family)
+            session.commit()
+
+    if phone:
+        numbers_released.append(phone)
+
+    log.warning("deleted account %s. Patients removed: %s. Numbers released: %s",
+                name, patients_removed or "none", numbers_released or "none")
+
+    return {
+        "deleted": True,
+        "name": name,
+        "patients_removed": patients_removed,
+        "numbers_released": numbers_released,
+        "family_removed": last_one_out,
+        # The Supabase login is untouched; the browser signs itself out.
+        "auth_deleted": False,
+    }
+
+
 # ==========================================================================
 # patients
 # ==========================================================================
@@ -562,6 +654,115 @@ def _patient_contact(patient: Patient, *, number_changed: bool) -> dict:
         #: message before any reminder will go to it.
         "needs_optin": number_changed,
     }
+
+
+def _erase_patient(session: Session, patient: Patient) -> dict:
+    """Delete a patient and everything hanging off them. Irreversible.
+
+    Order matters and has bitten repeatedly - Postgres refuses a parent while
+    a child still points at it:
+
+        message_log / symptom_report -> report -> dose_event -> schedule
+        -> medicine -> patient
+
+    Unlike `remove_medicine(permanent=true)`, message rows are DELETED rather
+    than unlinked. Unlinking keeps the body of every WhatsApp message the
+    patient ever sent, which is the opposite of what deleting a patient is
+    for: the point is that their words stop existing here.
+
+    Deleting the row is also what frees the WhatsApp number.
+    `patient.whatsapp_number` is UNIQUE, so a soft delete would leave the
+    number claimed forever and the same person could never be re-added.
+    """
+    pid = patient.id
+    removed = {"medicines": 0, "doses": 0, "messages": 0, "symptoms": 0,
+               "reports": 0}
+
+    medicine_ids = [m.id for m in session.exec(
+        select(Medicine).where(Medicine.patient_id == pid)).all()]
+    schedule_ids = [s.id for s in session.exec(
+        select(Schedule).where(col(Schedule.medicine_id).in_(medicine_ids))).all()
+    ] if medicine_ids else []
+
+    dose_ids = {d.id for d in session.exec(
+        select(DoseEvent).where(DoseEvent.patient_id == pid)).all()}
+    if schedule_ids:
+        dose_ids |= {d.id for d in session.exec(
+            select(DoseEvent).where(col(DoseEvent.schedule_id).in_(schedule_ids))
+        ).all()}
+
+    for row in session.exec(
+            select(MessageLog).where(MessageLog.patient_id == pid)).all():
+        session.delete(row)
+        removed["messages"] += 1
+    if dose_ids:
+        for row in session.exec(select(MessageLog).where(
+                col(MessageLog.dose_event_id).in_(dose_ids))).all():
+            session.delete(row)
+            removed["messages"] += 1
+    for row in session.exec(
+            select(SymptomReport).where(SymptomReport.patient_id == pid)).all():
+        session.delete(row)
+        removed["symptoms"] += 1
+    session.commit()
+
+    for row in session.exec(select(Report).where(Report.patient_id == pid)).all():
+        session.delete(row)
+        removed["reports"] += 1
+    session.commit()
+
+    for dose_id in dose_ids:
+        row = session.get(DoseEvent, dose_id)
+        if row is not None:
+            session.delete(row)
+            removed["doses"] += 1
+    session.commit()
+
+    for schedule_id in schedule_ids:
+        row = session.get(Schedule, schedule_id)
+        if row is not None:
+            session.delete(row)
+    session.commit()
+
+    for medicine_id in medicine_ids:
+        row = session.get(Medicine, medicine_id)
+        if row is not None:
+            session.delete(row)
+            removed["medicines"] += 1
+    session.commit()
+
+    session.delete(patient)
+    session.commit()
+    return removed
+
+
+@router.delete("/patients/{patient_id}")
+def delete_patient(patient_id: str, confirm: str = Query(""),
+                   caretaker: Caretaker = Depends(current_caretaker),
+                   session: Session = Depends(get_session)) -> dict:
+    """Remove a patient and their whole history. There is no undo.
+
+    `confirm` must be the patient's exact name. Typing it is the safeguard:
+    it makes deleting fourteen days of someone's medical history a deliberate
+    act rather than a mis-aimed click, and it is the same shape of guard the
+    rest of the industry uses for the same reason.
+    """
+    patient = _owned_patient(patient_id, caretaker, session)
+
+    if confirm.strip() != patient.name:
+        raise HTTPException(
+            400, f"Type the patient's name exactly ({patient.name}) to confirm.")
+
+    name, number = patient.name, patient.whatsapp_number
+    log.warning("caretaker %s is deleting patient %s (%s / %s)",
+                caretaker.id, patient_id, name, number)
+
+    removed = _erase_patient(session, patient)
+
+    log.warning("deleted patient %s - %s. Number %s is free again.",
+                name, removed, number)
+    return {"deleted": True, "name": name, "number_released": number,
+            "removed": removed}
 
 
 @router.get("/patients/{patient_id}")

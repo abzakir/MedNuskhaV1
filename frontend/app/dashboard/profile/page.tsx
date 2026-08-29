@@ -5,7 +5,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api, type Me } from "@/lib/api";
+import { api, type Me, type PatientSummary } from "@/lib/api";
+import { DeleteAccount } from "@/components/danger-zone";
 
 export default function ProfilePage() {
   const [me, setMe] = useState<Me | null>(null);
@@ -14,6 +15,9 @@ export default function ProfilePage() {
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Named in the delete confirmation, so nobody closes an account without
+  // seeing whose records go with it.
+  const [patients, setPatients] = useState<PatientSummary[]>([]);
 
   useEffect(() => {
     api.me().then((m) => {
@@ -21,6 +25,7 @@ export default function ProfilePage() {
       setName(m.name);
       setPhone(m.phone ?? "");
     });
+    api.patients().then(setPatients).catch(() => {});
   }, []);
 
   async function save(e: React.FormEvent) {
@@ -96,6 +101,15 @@ export default function ProfilePage() {
           {busy ? "Saving…" : "Save"}
         </Button>
       </form>
+
+      {me && (
+        <div className="mt-12">
+          <DeleteAccount
+            name={me.name}
+            patientNames={patients.map((p) => p.name)}
+          />
+        </div>
+      )}
     </div>
   );
 }
