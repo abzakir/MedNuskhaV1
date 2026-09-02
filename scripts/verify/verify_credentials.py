@@ -7,7 +7,8 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\ASUS\Desktop\MedNuskha")
+# scripts/verify/<this file> -> scripts/verify -> scripts -> <repo root>
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 os.chdir(ROOT)
 
@@ -47,13 +48,13 @@ async def main() -> int:
     print("=" * 66)
 
     fields = [
-        ("GREEN_API_ID_INSTANCE", settings.green_api_id_instance, True),
-        ("GREEN_API_TOKEN_INSTANCE", settings.green_api_token_instance, True),
+        ("BRIDGE_URL", settings.bridge_url, True),
         ("WEBHOOK_SECRET", settings.webhook_secret, True),
         ("GROQ_API_KEYS", ",".join(settings.groq_keys), True),
         ("DATABASE_URL", settings.database_url, True),
         ("SUPABASE_URL", settings.supabase_url, True),
         ("SUPABASE_ANON_KEY", settings.supabase_anon_key, True),
+        ("SUPABASE_SERVICE_KEY", settings.supabase_service_key, False),
         ("DASHSCOPE_API_KEYS", ",".join(settings.dashscope_keys), False),
     ]
     for name, value, required in fields:
@@ -74,60 +75,52 @@ async def main() -> int:
 
     # ------------------------------------------------------------------
     print("\n" + "=" * 66)
-    print("  2. GREEN API - is the instance live?")
+    print("  2. WHATSAPP BRIDGE - is WhatsApp actually connected?")
     print("=" * 66)
 
-    if not (settings.green_api_id_instance and settings.green_api_token_instance):
-        bad("Green API not configured - skipping live check")
-    else:
-        base = settings.green_base
-        tok = settings.green_api_token_instance
-        async with httpx.AsyncClient(timeout=25.0) as c:
-            try:
-                r = await c.get(f"{base}/getStateInstance/{tok}")
-                if r.status_code == 401:
-                    bad("Green API rejected the token (401) - check "
-                        "GREEN_API_TOKEN_INSTANCE and GREEN_API_ID_INSTANCE match")
-                elif r.status_code >= 300:
-                    bad(f"Green API returned {r.status_code}: {r.text[:200]}")
+    # Green API was replaced by the local Baileys bridge on 2026-08-22
+    # (PROJECT_LOG.md). The question is the same one - can we send? - but the
+    # answer now comes from a process on this machine rather than a vendor.
+    async with httpx.AsyncClient(timeout=10.0) as c:
+        try:
+            r = await c.get(f"{settings.bridge_url.rstrip('/')}/status")
+        except httpx.HTTPError as exc:
+            bad(f"bridge unreachable at {settings.bridge_url} ({exc}) - "
+                f"start it with `make bridge`")
+        else:
+            if r.status_code >= 300:
+                bad(f"bridge returned {r.status_code}: {r.text[:200]}")
+            else:
+                status = r.json()
+                state = status.get("state")
+                print(f"  state = {state!r}   number = {status.get('me') or '-'}")
+                if state == "connected":
+                    ok(f"WhatsApp connected as {status.get('me')} - it can send")
+                elif state == "qr":
+                    bad("bridge is waiting to be PAIRED - scan the QR code "
+                        "printed in its terminal from the spare phone")
+                elif state == "logged_out":
+                    bad("this device was unlinked. Delete "
+                        "whatsapp-bridge/auth_info/ and pair again.")
                 else:
-                    state = r.json().get("stateInstance")
-                    print(f"  stateInstance = {state!r}")
-                    if state == "authorized":
-                        ok("instance is AUTHORIZED - the QR is scanned and it can send")
-                    elif state == "notAuthorized":
-                        bad("instance is NOT authorized - scan the QR code in the "
-                            "Green API console with the spare phone")
-                    elif state == "blocked":
-                        bad("instance is BLOCKED - that number has been banned by "
-                            "WhatsApp. Use a different number.")
-                    elif state == "starting":
-                        warn("instance is STARTING - wait ~1 minute and re-run this")
-                    else:
-                        warn(f"unexpected state {state!r}")
-            except httpx.HTTPError as exc:
-                bad(f"could not reach Green API: {exc}")
+                    warn(f"bridge is {state!r} - it reconnects on its own; "
+                         f"re-run this in a moment")
 
-            # Settings: which webhooks are enabled?
-            try:
-                r = await c.get(f"{base}/getSettings/{tok}")
-                if r.status_code < 300:
-                    s = r.json()
-                    hook = s.get("webhookUrl") or ""
-                    print(f"\n  webhookUrl        = {hook or '(not set yet)'}")
-                    print(f"  incomingWebhook   = {s.get('incomingWebhook')}")
-                    print(f"  outgoingMessageWebhook = "
-                          f"{s.get('outgoingMessageWebhook')}")
-                    if not hook:
-                        warn("no webhookUrl set yet - expected, it needs the ngrok "
-                             "URL once the backend is running")
-                    if s.get("incomingWebhook") != "yes":
-                        warn("incomingWebhook is not 'yes' - replies will not reach "
-                             "us. Claude will set this automatically at startup.")
-                    else:
-                        ok("incoming webhooks are enabled")
-            except Exception as exc:  # noqa: BLE001
-                warn(f"could not read Green API settings: {exc}")
+                allowlist = status.get("allowlist") or []
+                if allowlist:
+                    ok(f"ALLOWED_NUMBERS is set ({len(allowlist)} number(s)) - "
+                       f"a mis-typed number cannot reach a stranger")
+                else:
+                    warn("ALLOWED_NUMBERS is empty - the bridge will message "
+                         "ANY number it is given. Set it on any deployed host.")
+
+    if not settings.webhook_secret:
+        bad("WEBHOOK_SECRET is empty - the webhook is then open to anyone who "
+            "guesses the URL, and could be posted a fake dose confirmation")
+
+    if settings.dev_auth_bypass:
+        warn("DEV_AUTH_BYPASS is true - every unauthenticated request is "
+             "treated as a caretaker. Fine locally, never in production.")
 
     # ------------------------------------------------------------------
     print("\n" + "=" * 66)
@@ -145,10 +138,16 @@ async def main() -> int:
                         "https://api.groq.com/openai/v1/chat/completions",
                         headers={"Authorization": f"Bearer {key}",
                                  "Content-Type": "application/json"},
+                        # GROQ_REASONING_EFFORT exactly as the agent sends it.
+                        # Without it this model prefixes every reply with a
+                        # <think> block, and a check that passes on output the
+                        # app would never see is not a check.
                         json={"model": settings.groq_model,
                               "messages": [{"role": "user",
                                             "content": "Reply with the single word: ok"}],
-                              "max_tokens": 5, "temperature": 0},
+                              "max_tokens": 5, "temperature": 0,
+                              **({"reasoning_effort": settings.groq_reasoning_effort}
+                                 if settings.groq_reasoning_effort else {})},
                     )
                 except httpx.HTTPError as exc:
                     bad(f"{label} {mask(key)} - network error: {exc}")

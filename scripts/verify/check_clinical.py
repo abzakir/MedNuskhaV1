@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(r"C:\Users\ASUS\Desktop\MedNuskha") / "backend"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
 from app.agent.caretaker import _fast_kind
 

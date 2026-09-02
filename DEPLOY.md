@@ -75,7 +75,10 @@ Lists* → *Default Security List* → **Add Ingress Rules**:
 | `0.0.0.0/0` | TCP | `80` |
 | `0.0.0.0/0` | TCP | `443` |
 
-Do **not** open 8000 or 3001. The bridge will message anyone who asks it to.
+Do **not** open 8000 or 3001. The bridge will message anyone who asks it
+to. It binds loopback unless `BRIDGE_HOST` says otherwise, and compose
+publishes it on `127.0.0.1` only — but a firewall hole is a firewall hole,
+so leave the port closed as well.
 
 **Second, the one on the machine itself.** Oracle's Ubuntu images ship with
 iptables rules that drop everything except SSH. After you connect in 1.4:
@@ -120,12 +123,17 @@ cd MedNuskhaV1
 A private repo will ask for credentials — use a GitHub personal access token
 as the password, not your account password.
 
+> **Push first.** The server builds from what is on GitHub, not from what is
+> on your laptop. `git status` on your machine should be clean and
+> `git push` already done, or you will deploy an older build and spend the
+> evening wondering why a bug you fixed is still there.
+
 ### 1.7 Configuration
 
 Copy your `.env` up **from your laptop**, in a second terminal:
 
 ```bash
-scp -i ssh-key-*.key C:/Users/ASUS/Desktop/MedNuskha/.env ubuntu@YOUR_IP:~/MedNuskhaV1/.env
+scp -i ssh-key-*.key path/to/MedNuskha/.env ubuntu@YOUR_IP:~/MedNuskhaV1/.env
 ```
 
 Back on the server, change three values:
@@ -163,7 +171,7 @@ has a working session, so copy it instead of re-pairing.
 From your laptop:
 
 ```bash
-cd C:/Users/ASUS/Desktop/MedNuskha/whatsapp-bridge
+cd path/to/MedNuskha/whatsapp-bridge      # wherever you cloned it
 tar czf auth.tgz auth_info
 scp -i ~/ssh-key-*.key auth.tgz ubuntu@YOUR_IP:~/
 ```
@@ -172,8 +180,8 @@ On the server:
 
 ```bash
 cd ~ && tar xzf auth.tgz
-docker volume create mednuskhav1_whatsapp-auth
-docker run --rm -v mednuskhav1_whatsapp-auth:/dst -v ~/auth_info:/src alpine \
+docker volume create mednuskha_whatsapp-auth
+docker run --rm -v mednuskha_whatsapp-auth:/dst -v ~/auth_info:/src alpine \
   sh -c "cp -a /src/. /dst/"
 rm -rf ~/auth_info ~/auth.tgz
 ```
@@ -197,7 +205,13 @@ curl localhost:8000/api/health
 ```
 
 You want `"database":"connected"`, `"scheduler":"running"`,
-`"whatsapp":{"state":"connected"}`.
+`"scheduler_lock":"held"` and `"whatsapp":{"state":"connected"}`.
+
+`scheduler_lock` is the one to read twice. `running` only means the timer is
+ticking; `held` means this is the process that actually sends. A backend still
+running on your laptop against the same Supabase project holds the lock, and
+the server will sit on standby saying `not held` — see *Reminders never fire*
+below.
 
 If WhatsApp says `qr`, the session did not copy — redo 1.8.
 
@@ -241,7 +255,7 @@ Caddy obtains and renews the certificate on its own.
 ## Part 2 — the dashboard on Vercel
 
 ```bash
-cd C:/Users/ASUS/Desktop/MedNuskha/frontend
+cd path/to/MedNuskha/frontend
 npx vercel login
 npx vercel --prod
 ```
@@ -308,12 +322,14 @@ scheduler, the session, the numbers and the tunnel between Vercel and Oracle.
 - [ ] `ALLOWED_NUMBERS` set to your demo numbers only
 - [ ] `NEXT_PUBLIC_API_BASE` is the HTTPS URL in **both** `.env` and Vercel
 - [ ] Ports 8000 and 3001 are **not** in the Oracle security list
-- [ ] `/api/health` returns connected / running / connected
+- [ ] `/api/health` returns connected / running / **held** / connected
+- [ ] `SUPABASE_SERVICE_KEY` is set, or accept that reports and voice
+      notes are rebuilt on demand rather than archived — both still work
 - [ ] A live reminder arrived on a real phone
 - [ ] The WhatsApp volume is backed up:
 
 ```bash
-docker run --rm -v mednuskhav1_whatsapp-auth:/src -v ~:/dst alpine \
+docker run --rm -v mednuskha_whatsapp-auth:/src -v ~:/dst alpine \
   tar czf /dst/whatsapp-auth-backup.tgz -C /src .
 ```
 
@@ -339,9 +355,12 @@ idle. Open the Supabase dashboard and it wakes.
 **Dashboard loads, every request fails** — `NEXT_PUBLIC_API_BASE` is wrong, or
 was set after the last build. Fix it and redeploy.
 
-**Reminders never fire** — `curl localhost:8000/api/health`. If `scheduler` is
-not `running`, another process holds the Postgres advisory lock: stop the
-backend on your laptop.
+**Reminders never fire** — `curl localhost:8000/api/health` and read
+`scheduler_lock`, not `scheduler`. Exactly one process may send, and a
+Postgres advisory lock decides which. `"not held"` means something else holds
+it — almost always a backend still running on your laptop against the same
+Supabase project. Stop it, and the server takes over on its next tick without
+needing a restart.
 
 **Everything looks right but nothing arrives** — `ALLOWED_NUMBERS`. A wrong
 value drops sends silently.

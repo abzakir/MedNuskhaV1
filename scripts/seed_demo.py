@@ -23,7 +23,7 @@ import argparse
 import asyncio
 import random
 import sys
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -243,7 +243,10 @@ def find_caretaker(session, email: str | None) -> Caretaker | None:
 def seed(patient_name: str, phone: str, email: str | None,
          seed_value: int) -> dict:
     rng = random.Random(seed_value)
-    today = date.today()
+    # Asia/Karachi, not the server's date. The dashboard shows every date in
+    # Karachi time, so seeding against a UTC "today" puts the demo's last day
+    # in the wrong column for five hours every evening.
+    today = datetime.now(settings.tz).date()
     start = today - timedelta(days=DAYS - 1)
 
     with session_scope() as s:

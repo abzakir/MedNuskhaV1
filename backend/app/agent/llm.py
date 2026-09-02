@@ -17,7 +17,6 @@ PROJECT_LOG.md.
 
 from __future__ import annotations
 
-import itertools
 import json
 import logging
 import re
@@ -79,7 +78,8 @@ class KeyRing:
 
     def __init__(self) -> None:
         self._keys: list[PooledKey] = []
-        self._cycle: itertools.cycle | None = None
+        #: Where the round-robin resumes. Set for real in reload().
+        self._index = 0
         self.reload()
 
     def reload(self) -> None:

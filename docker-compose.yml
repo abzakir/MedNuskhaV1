@@ -8,6 +8,13 @@
 # to pair with. Scan it from the phone that owns the number, and the session
 # is written to the whatsapp-auth volume. Every later start reuses it.
 
+# Pin the project name. Compose otherwise derives it from the DIRECTORY, so a
+# clone into MedNuskha and a clone into MedNuskhaV1 build different volume
+# names - and the WhatsApp session restored into `mednuskhav1_whatsapp-auth`
+# is invisible to a stack calling it `mednuskha_whatsapp-auth`. The bridge
+# then prints a QR code on a machine nobody is holding a phone next to.
+name: mednuskha
+
 services:
   backend:
     build:
@@ -24,7 +31,13 @@ services:
       # caretaker. It must never be true on a public host.
       DEV_AUTH_BYPASS: "false"
     ports:
-      - "8000:8000"
+      # Loopback only. TLS terminates at Caddy on the host, which
+      # proxies to localhost:8000 - so nothing off the box needs to
+      # reach this directly. Published on every interface it would
+      # answer plain HTTP to anyone whose packets arrive, and the only
+      # thing standing in the way would be a cloud firewall rule
+      # somebody has to remember not to add.
+      - "127.0.0.1:8000:8000"
     volumes:
       # Without these two, every deploy re-synthesises the voice notes and
       # re-downloads the Whisper model. Neither is fatal - both regenerate -
@@ -41,6 +54,10 @@ services:
     restart: unless-stopped
     environment:
       BRIDGE_PORT: "3001"
+      # The backend container reaches the bridge by service name, so inside
+      # the compose network it has to listen on every interface. The published
+      # port below is still loopback-only, so nothing off the host can.
+      BRIDGE_HOST: "0.0.0.0"
       # The secret is what stops anyone who guesses the URL posting a fake
       # "she took her medicine" - the endpoint is public and Baileys has no
       # equivalent of Meta's verify handshake (PROJECT_LOG.md, Session 5).
