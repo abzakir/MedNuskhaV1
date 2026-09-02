@@ -155,6 +155,18 @@ ALLOWED_NUMBERS=923200268481,923255159422
 - **`ALLOWED_NUMBERS`** — empty means *no restriction*. Set it, or a mistyped
   number reaches a stranger.
 
+Then check it, before building anything:
+
+```bash
+python3 scripts/preflight.py
+```
+
+Standard library only, so it runs on a bare Ubuntu box with no virtualenv. It
+checks the settings that fail *quietly* — a report link still pointing at
+localhost, an empty `ALLOWED_NUMBERS` — the ones where the site loads, the
+dashboard looks right, and either nothing arrives or a stranger gets a message
+about somebody's mother. Fix every `MUST FIX` before continuing.
+
 *On the 1GB AMD shape only*, also drop the local Whisper model so the image
 stays small — Groq handles transcription anyway:
 
