@@ -115,6 +115,21 @@ class Settings(BaseSettings):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def voice_cache_path(self) -> Path:
+        """VOICE_CACHE_DIR as an absolute path.
+
+        The default is relative, and the ticker reads this directory at the
+        moment a dose is due while the API writes it from a background task.
+        Resolving against the repo root rather than the working directory is
+        what keeps those two pointing at the same folder whether the server
+        was started from the repo root (`make dev`), from `backend/`, or from
+        `/app` in the container.
+        """
+        raw = Path(self.voice_cache_dir).expanduser()
+        return raw if raw.is_absolute() else (REPO_ROOT / raw)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def cors_origins(self) -> list[str]:
         return self._split(self.cors_allow_origins) or ["*"]
 

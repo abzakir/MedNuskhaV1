@@ -34,7 +34,7 @@ KEY_CHARS = 16
 
 
 def cache_dir() -> Path:
-    path = Path(settings.voice_cache_dir)
+    path = settings.voice_cache_path
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -84,6 +84,24 @@ def put(key: str, blob: bytes) -> None:
         log.error("could not write %s to the local cache: %s", key, exc)
 
     storage.try_upload(settings.supabase_storage_bucket, key, blob, CONTENT_TYPE)
+
+
+def forget(key: str) -> None:
+    """Remove a cached voice note, locally.
+
+    Used when a sentence turns out to be unusable - the Urdu voice swallowing
+    a medicine's name, say. Because `audio_for` resolves a missing dose key by
+    hashing the sentence, leaving the file behind would quietly serve it again
+    on the next dose. The archived copy is left alone: it is not read on the
+    reminder path, and Storage is a record rather than a source.
+    """
+    path = _local(key)
+    try:
+        if path.exists():
+            path.unlink()
+            log.info("removed unusable voice note %s", key)
+    except OSError as exc:  # noqa: BLE001 - never break the caller
+        log.warning("could not remove %s: %s", key, exc)
 
 
 def stats() -> dict:
