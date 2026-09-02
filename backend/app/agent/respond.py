@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlmodel import col, select
@@ -24,8 +25,8 @@ from app.agent.interpret import Intent
 from app.config import settings
 from app.db import session_scope
 from app.i18n import strings
-from app.models import (Caretaker, DoseEvent, Medicine, Patient, Schedule,
-                        SymptomReport)
+from app.models import (Caretaker, DoseEvent, Medicine, MedicineReference,
+                        Patient, Schedule, SymptomReport)
 from app.scheduler import state_machine as sm
 from app.whatsapp import client as wa
 
@@ -105,10 +106,19 @@ def _caretakers_for(patient_id: str) -> list[dict]:
 
 
 def _known_texts(patient_id: str) -> list[str]:
-    """Every dose figure the database actually holds for this patient.
+    """Everything a caretaker has already approved for this patient.
 
-    Invariant 10 checks outbound text against this, so "Panadol 500mg" passes
-    and an invented "take 1000mg" does not.
+    Two guardrails read it. Invariant 10 checks dose figures against it, so
+    "Panadol 500mg" passes and an invented "take 1000mg" does not; the
+    foreign-medicine check reads the same list to tell this patient's
+    medicines from somebody else's.
+
+    The CONFIRMED reference text is in here too, and has to be: `_on_question`
+    quotes it back verbatim, and a caretaker-approved sentence that happens to
+    mention another brand - "Panadol ka generic hai" - would otherwise trip
+    the foreign-medicine check and turn an answer into a refusal. Invariant 9
+    already says a confirmed row is the one thing the agent may repeat, so
+    anything in it is by definition allowed out again.
     """
     with session_scope() as session:
         rows = session.exec(
@@ -118,7 +128,57 @@ def _known_texts(patient_id: str) -> list[str]:
             texts.append(f"{m.name} {m.strength or ''}")
             if m.notes:
                 texts.append(m.notes)
+            if not m.reference_id:
+                continue
+            ref = session.get(MedicineReference, m.reference_id)
+            if ref is None or not ref.confirmed:
+                continue          # invariant 9: a draft is not approved text
+            texts.extend(t for t in (ref.canonical_name, ref.purpose_ur,
+                                     ref.purpose_en, ref.food_rule,
+                                     ref.common_timing) if t)
+            texts.extend(ref.aliases or [])
         return texts
+
+
+#: (names, expires_at) for `_all_medicine_names`. Two whole-table reads on
+#: every outbound message is a query per sentence for a list that changes when
+#: somebody adds a medicine - minutes apart at best, never mid-conversation.
+_MEDICINE_NAMES: tuple[list[str], float] = ([], 0.0)
+_MEDICINE_NAMES_TTL = 60.0
+
+
+def _all_medicine_names() -> list[str]:
+    """Every medicine name the system has ever been told about.
+
+    Passed to the guardrail so it can tell a medicine this patient is NOT on
+    from an ordinary word. The seed list in guardrails covers the pharmacy
+    shelf a model reaches for unprompted; this covers everything anyone here
+    has actually prescribed, and grows on its own.
+
+    Cached for a minute. A medicine added on the dashboard is in the list
+    before the patient could answer anything about it, and a stale entry only
+    ever means the guardrail is briefly *less* suspicious of a name - never
+    that it blocks one it should not.
+    """
+    global _MEDICINE_NAMES
+    names, expires = _MEDICINE_NAMES
+    if time.monotonic() < expires:
+        return names
+
+    try:
+        with session_scope() as session:
+            names = [m.name for m in session.exec(select(Medicine)).all()]
+            for ref in session.exec(select(MedicineReference)).all():
+                names.append(ref.canonical_name)
+                names.extend(ref.aliases or [])
+        names = [n for n in names if n]
+    except Exception as exc:  # noqa: BLE001 - the seed list still guards us
+        log.warning("could not read the medicine corpus (%s) - the guardrail "
+                    "falls back to its seed list", exc)
+        return names
+
+    _MEDICINE_NAMES = (names, time.monotonic() + _MEDICINE_NAMES_TTL)
+    return names
 
 
 # --------------------------------------------------------------------------
@@ -133,8 +193,12 @@ async def _send_checked(patient, draft: str, *, intent: Intent | None = None,
     caretakers = caretakers if caretakers is not None else _caretakers_for(patient.id)
     primary = caretakers[0]["name"] if caretakers else "aap ke ghar walon"
 
+    # The guardrail needs to know which medicines exist at all, so it can
+    # tell one this patient is not on from an ordinary word.
+    known_medicines = await asyncio.to_thread(_all_medicine_names)
     result = guardrails.check(draft, patient=patient, intent=intent,
-                              known_texts=known_texts, caretaker_name=primary)
+                              known_texts=known_texts, caretaker_name=primary,
+                              known_medicines=known_medicines)
 
     await wa.send_text(patient.whatsapp_number, result.message)
 
@@ -172,7 +236,9 @@ async def _speak_back(patient, intent, key: str, **values) -> bool:
     try:
         from app.voice import store, tts
 
-        cached = await tts.ensure_cached(line)
+        # `values` carries the medicine when the line names one, so the
+        # same swallowed-name check covers the spoken reply too.
+        cached = await tts.ensure_spoken(line, values.get("medicine"))
         if cached is None:
             return False
         audio = await asyncio.to_thread(store.get, cached)
@@ -187,8 +253,19 @@ async def _speak_back(patient, intent, key: str, **values) -> bool:
 
 async def _alert_caretakers(caretakers: list[dict], *, reason: str,
                             patient, words: str) -> None:
-    """Tell the caretakers something needs a human."""
-    for caretaker in caretakers:
+    """Tell the caretakers something needs a human.
+
+    A caretaker who signed up with an email and has not yet added their
+    WhatsApp number is skipped rather than attempted: `caretaker.phone` is
+    nullable, and sending to it raises inside the loop and buries a real
+    alert under a stack trace. The dashboard already nags them for it.
+    """
+    reachable = [c for c in caretakers if c.get("phone")]
+    if caretakers and not reachable:
+        log.warning("patient %s needs a human (%s) but no caretaker in the "
+                    "family has a WhatsApp number", patient.id, reason)
+
+    for caretaker in reachable:
         lang = caretaker.get("language") or "ur"
         body = strings.t("caretaker_emergency", lang,
                          patient=patient.name, words=(words or "")[:200])
@@ -213,8 +290,24 @@ async def respond(intent: Intent, patient) -> None:
     log.info("patient %s intent=%s dose=%s confidence=%.2f",
              patient.id, intent.kind, intent.dose_id, intent.confidence)
 
+    # An emergency outranks everything, including the opt-in gate below: a
+    # patient writing "chest pain" gets the emergency copy whether or not they
+    # have ever agreed to reminders (section 11).
+    if intent.kind == "emergency":
+        await _on_emergency(intent, patient, lang, caretakers, primary, known)
+        return
+
+    # Section 4.4: a patient who has not opted in has been asked exactly one
+    # question - whether to start at all - and their reply is the answer to
+    # that, not a dose confirmation. They have no doses either, because
+    # materialisation skips them, so the ordinary path can only ever answer
+    # "samajh nahi aaya" and the patient is stranded with reminders off
+    # forever. This is the only way back in.
+    if not patient.opted_in and not patient.stopped:
+        await _on_optin(intent, patient, lang, caretakers, primary, known)
+        return
+
     handler = {
-        "emergency": _on_emergency,
         "taken": _on_taken,
         "later": _on_later,
         "not_taken": _on_not_taken,
@@ -225,6 +318,48 @@ async def respond(intent: Intent, patient) -> None:
     }.get(intent.kind, _on_unclear)
 
     await handler(intent, patient, lang, caretakers, primary, known)
+
+
+async def _on_optin(intent, patient, lang, caretakers, primary, known) -> None:
+    """The reply to `patient_optin` - the one question a new handset is asked.
+
+    "HAAN" is what the intro message asks for, and until it arrives nothing is
+    sent to that number. A refusal is honoured as a STOP; anything else is met
+    with the intro message again, because there is only one thing to say.
+    """
+    if intent.kind == "stop":
+        await _on_stop(intent, patient, lang, caretakers, primary, known)
+        return
+
+    from app.agent.interpret import is_affirmative
+
+    if intent.kind == "taken" or is_affirmative(intent.text or ""):
+        await asyncio.to_thread(_set_opted_in, patient.id)
+        patient.opted_in = True
+        log.info("patient %s opted in", patient.id)
+
+        # Their doses were never materialised while they were opted out, so
+        # the first reminder would otherwise wait for a schedule day to turn
+        # over rather than arriving at the next dose time.
+        try:
+            from app.scheduler.ticker import materialise_doses
+            await asyncio.to_thread(materialise_doses)
+        except Exception as exc:  # noqa: BLE001 - the ticker will catch up
+            log.warning("materialisation after opt-in failed: %s", exc)
+
+        body = strings.t("optin_confirmed", lang, name=patient.name)
+        # No SPOKEN template for this one: the intro and its answer are a
+        # written exchange, and strings.SPOKEN is the whole of what may be
+        # spoken aloud.
+        await _send_checked(patient, body, intent=intent, caretakers=caretakers,
+                            known_texts=known)
+        return
+
+    log.info("patient %s has not opted in yet and did not say HAAN - "
+             "re-sending the intro", patient.id)
+    body = strings.t("patient_optin", lang, name=patient.name, caretaker=primary)
+    await _send_checked(patient, body, intent=intent, caretakers=caretakers,
+                        known_texts=known)
 
 
 async def _on_emergency(intent, patient, lang, caretakers, primary, known) -> None:
@@ -356,10 +491,22 @@ Hard rules:
   timing, or health. You are asking a question, not giving information.
 - No greeting, no sign-off, no emoji. Output the sentence only."""
 
+#: The worked example must NOT name a real medicine. It used to say
+#: "...kya aap ne Panadol le li hai?", and on 2026-08-30 the model copied
+#: that example verbatim instead of substituting the patient's own
+#: medicine - asking a woman taking polymalt whether she had taken
+#: Panadol. A medication reminder naming a drug the patient is not on is
+#: the worst thing this file can do, so there is now no drug name left in
+#: the prompt for a model to reach for.
 _REGISTER = {
     "ur": "Write in Roman Urdu (Urdu written in English letters), like: "
-          "\"Maaf kijiye ga, samajh nahi aaya. Kya aap ne Panadol le li hai?\"",
-    "en": "Write in plain English.",
+          "\"Maaf kijiye ga, samajh nahi aaya. Kya aap ne apni dawai le "
+          "li hai?\" - but replace \"apni dawai\" with the medicine "
+          "named below whenever one is given.",
+    "en": "Write in plain English, like: "
+          "\"Sorry, I didn't catch that. Have you taken your medicine?\""
+          " - but replace \"your medicine\" with the medicine named "
+          "below whenever one is given.",
 }
 
 
@@ -379,10 +526,39 @@ async def _clarify_text(intent, lang: str, doses: list) -> str | None:
     register = _REGISTER.get(lang) or _REGISTER["ur"]
     said = (intent.text or "").strip()[:200]
 
-    return await llm.try_chat([
+    worded = await llm.try_chat([
         {"role": "system", "content": _CLARIFY_SYSTEM.format(register=register)},
         {"role": "user", "content": f"{context}\nThey said: {said!r}"},
     ])
+    if worded is None:
+        return None
+
+    # If we handed the model a medicine to ask about, its sentence has to
+    # be about THAT medicine. One naming none of them is either generic -
+    # where the canned string says it better anyway - or it has named
+    # something we never mentioned, which is how a patient taking polymalt
+    # was asked about Panadol. Either way the canned string is the answer.
+    if doses and not _names_one_of(worded, doses):
+        log.warning(
+            "the clarifying question named no medicine we offered it "
+            "(%r) - using the canned string instead", worded[:120])
+        return None
+
+    return worded
+
+
+def _names_one_of(text: str, doses: list) -> bool:
+    """True when `text` mentions the medicine of one of these doses.
+
+    Matched on the medicine's own name words rather than the whole label,
+    so "Panadol" still counts when the label is "Panadol 500mg".
+    """
+    lowered = (text or "").lower()
+    for dose in doses:
+        for word in (getattr(dose, "medicine_name", "") or "").lower().split():
+            if len(word) >= 4 and word in lowered:
+                return True
+    return False
 
 
 async def _on_unclear(intent, patient, lang, caretakers, primary, known) -> None:
@@ -462,6 +638,19 @@ def _record_symptom(patient_id: str, intent: Intent, severity: str,
             caretaker_alerted=alerted,
             reported_at=datetime.now(timezone.utc),
         ))
+        session.commit()
+
+
+def _set_opted_in(patient_id: str) -> None:
+    with session_scope() as session:
+        patient = session.get(Patient, patient_id)
+        if patient is None:
+            return
+        patient.opted_in = True
+        patient.stopped = False
+        if patient.opted_in_at is None:
+            patient.opted_in_at = datetime.now(timezone.utc)
+        session.add(patient)
         session.commit()
 
 

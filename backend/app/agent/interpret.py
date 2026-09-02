@@ -57,6 +57,8 @@ class Intent:
     #: The text the intent was derived from - the typed message, or the
     #: transcript of a voice note.
     text: str | None = None
+    #: WhatsApp said the message was forwarded, not composed now.
+    forwarded: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -98,6 +100,20 @@ _QUESTION_RE = re.compile(
 #: "1" / "2" replies to the numbered options the bridge sends in place of
 #: buttons. Option order is fixed by TEMPLATE_BUTTONS in whatsapp/client.py.
 _OPTION_RE = re.compile(r"^\s*([12])\s*[.)]?\s*$")
+
+
+def is_affirmative(text: str) -> bool:
+    """True when a short reply is a plain yes.
+
+    Used by the opt-in path, which asks one closed question and needs the
+    answer to it - not a dose confirmation. Kept next to `_TAKEN_RE` so the
+    two can never drift apart: "HAAN" is what the opt-in message asks for and
+    is the same word a patient uses to confirm a dose.
+    """
+    clean = (text or "").strip()
+    if not clean or len(clean.split()) > 4:
+        return False
+    return bool(_TAKEN_RE.search(clean))
 
 
 def _fast_intent(text: str) -> tuple[IntentKind, float] | None:
@@ -146,6 +162,28 @@ def _medicine_in_text(text: str, open_doses: list) -> str | None:
             if len(word) >= 4 and word in lowered:
                 return getattr(dose, "id", None)
     return None
+
+
+#: Intents that change what the record says happened. A forwarded message
+#: may never produce one of these - see `_not_an_answer`.
+STATE_CHANGING = ("taken", "not_taken", "later", "stop")
+
+
+def _not_an_answer(kind: IntentKind, forwarded: bool) -> bool:
+    """True when a forwarded message is about to be read as a reply.
+
+    A patient forwarding a voice note is passing something along, not
+    answering us. On 2026-08-30 one forwarded her own note back and the
+    agent recorded the dose as taken and thanked her for it - a dose
+    marked swallowed that nobody had swallowed, and the escalation that
+    would have caught it switched off.
+
+    Nothing that changes the record may come from a forwarded message.
+    An emergency still does: erring towards alerting somebody is the one
+    direction this system is allowed to err in, and a forwarded "seene
+    mein dard" is still worth a human looking.
+    """
+    return forwarded and kind in STATE_CHANGING
 
 
 #: States where the patient has actually been asked and has not answered.
@@ -235,6 +273,7 @@ async def interpret(msg, patient, open_doses) -> Intent:
     """
     text = (getattr(msg, "text", None) or "").strip()
     payload = getattr(msg, "payload", None)
+    forwarded = bool(getattr(msg, "forwarded", False))
 
     dose_id, ambiguous = resolve_dose(text, payload, open_doses)
 
@@ -257,6 +296,10 @@ async def interpret(msg, patient, open_doses) -> Intent:
     fast = _fast_intent(text)
     if fast is not None:
         kind, confidence = fast
+        if _not_an_answer(kind, forwarded):
+            log.info("forwarded message read as %r - asking instead of recording it", kind)
+            return Intent(kind="unclear", dose_id=dose_id, reason=text,
+                          confidence=0.0, text=text, forwarded=True)
         if ambiguous and kind in ("taken", "later", "not_taken"):
             # We know WHAT they meant but not WHICH dose. Ask.
             return Intent(kind="unclear", dose_id=None, reason=text,
@@ -303,10 +346,15 @@ async def interpret(msg, patient, open_doses) -> Intent:
     if ambiguous and kind in ("taken", "later", "not_taken"):
         kind, confidence = "unclear", min(confidence, 0.5)
 
+    if _not_an_answer(kind, forwarded):
+        log.info("forwarded message read as %r - asking instead of recording it", kind)
+        kind, confidence = "unclear", 0.0
+
     if confidence < CONFIDENCE_FLOOR and kind not in ("emergency", "stop"):
         log.info("confidence %.2f below floor for %r - treating as unclear",
                  confidence, text[:60])
         kind = "unclear"
 
     return Intent(kind=kind, dose_id=dose_id, reason=reason,
-                  confidence=confidence, medicine=medicine, text=text)
+                  confidence=confidence, medicine=medicine, text=text,
+                  forwarded=forwarded)

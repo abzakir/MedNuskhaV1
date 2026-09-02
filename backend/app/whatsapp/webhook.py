@@ -325,7 +325,8 @@ async def handle_patient_reply(msg: InboundMessage, context: dict) -> None:
     open_doses = await asyncio.to_thread(responder.open_doses_for, patient.id)
     log.info("patient %s has %d open dose(s)", patient.id, len(open_doses))
 
-    probe = _Probe(text=text, payload=msg.payload)
+    probe = _Probe(text=text, payload=msg.payload,
+                   forwarded=getattr(msg, "forwarded", False))
     intent = await interpret(probe, patient, open_doses)
     intent.from_voice = from_voice
 
@@ -336,11 +337,15 @@ class _Probe:
     """The minimal shape `interpret` needs, so a transcript can stand in for
     the original message without mutating it."""
 
-    __slots__ = ("text", "payload")
+    __slots__ = ("text", "payload", "forwarded")
 
-    def __init__(self, text: str | None, payload: str | None):
+    def __init__(self, text: str | None, payload: str | None,
+                 forwarded: bool = False):
         self.text = text
         self.payload = payload
+        #: Carried through so a forwarded voice note is not read as an
+        #: answer once it has been transcribed - see agent.interpret.
+        self.forwarded = forwarded
 
 
 def _load_patient(patient_id: str):

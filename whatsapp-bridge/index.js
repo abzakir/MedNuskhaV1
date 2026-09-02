@@ -39,6 +39,12 @@ import pino from 'pino'
 import qrcode from 'qrcode-terminal'
 
 const PORT = Number(process.env.BRIDGE_PORT || 3001)
+// Loopback by default. This process will send a WhatsApp message to anyone who
+// can reach it and has no authentication of its own, so on a bare-metal host
+// binding every interface hands the account to the internet. Docker overrides
+// this to 0.0.0.0 because there the backend reaches it by service name and the
+// published port is already pinned to 127.0.0.1 (see docker-compose.yml).
+const HOST = process.env.BRIDGE_HOST || '127.0.0.1'
 const BACKEND_WEBHOOK_URL =
   process.env.BACKEND_WEBHOOK_URL || 'http://127.0.0.1:8000/webhook'
 const AUTH_DIR = process.env.AUTH_DIR || './auth_info'
@@ -212,6 +218,13 @@ async function handleIncoming(m) {
     return
   }
 
+  // Whether WhatsApp says this was forwarded rather than composed now.
+  // A forwarded voice note is the patient passing something along, not
+  // answering us, and the backend must not read it as a dose reply.
+  const content = m.message[contentType]
+  const ctx = content && typeof content === 'object' ? content.contextInfo : null
+  const forwarded = Boolean(ctx && (ctx.isForwarded || (ctx.forwardingScore || 0) > 0))
+
   const payload = {
     id: m.key.id,
     from,
@@ -220,6 +233,7 @@ async function handleIncoming(m) {
     text: null,
     buttonId: null,
     audioBase64: null,
+    forwarded,
     raw: { contentType, lid: lid || undefined, unresolved: unresolved || undefined },
   }
 
@@ -298,6 +312,7 @@ async function handleIncoming(m) {
 
   log.info(
     `in  ${from}${lid ? ` (lid ${lid})` : ''} ${payload.type}` +
+      (forwarded ? ' [forwarded]' : '') +
       (payload.buttonId ? ` [${payload.buttonId}]` : '') +
       (payload.text ? ` ${JSON.stringify(payload.text).slice(0, 60)}` : '')
   )
@@ -433,8 +448,8 @@ app.post('/send/audio', async (req, res) => {
   }
 })
 
-app.listen(PORT, () => {
-  log.info(`bridge listening on http://127.0.0.1:${PORT}`)
+app.listen(PORT, HOST, () => {
+  log.info(`bridge listening on http://${HOST}:${PORT}`)
   log.info(`forwarding incoming messages to ${BACKEND_WEBHOOK_URL}`)
   connect().catch((err) => log.error(`connect failed: ${err.message}`))
 })

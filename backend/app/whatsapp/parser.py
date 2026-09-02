@@ -39,6 +39,10 @@ class InboundMessage:
 
     #: The media itself, already downloaded by the bridge. None for text.
     media_bytes: bytes | None = field(default=None, repr=False)
+    #: WhatsApp says this was forwarded rather than composed now. A
+    #: forwarded message is the patient passing something along, not
+    #: answering - see agent.interpret.
+    forwarded: bool = False
     #: Whatever the bridge could tell us about the original message.
     raw: dict = field(default_factory=dict)
 
@@ -103,6 +107,7 @@ def parse_message(body: dict) -> InboundMessage:
         media_id=body.get("mediaId"),
         timestamp=_ts(body.get("timestamp")),
         media_bytes=media,
+        forwarded=bool(body.get("forwarded")),
         raw=body.get("raw") or {},
     )
 

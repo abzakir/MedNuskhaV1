@@ -103,6 +103,71 @@ _DOSE_FIGURE_RE = re.compile(
 )
 
 
+#: Medicine names the agent may never introduce on its own.
+#:
+#: Invariant 8 stops the agent giving advice; this stops it naming the wrong
+#: drug, which is a different and equally serious failure. On 2026-08-30 the
+#: clarifying question asked a patient taking polymalt whether she had taken
+#: "Panadol" - a name the model lifted out of a worked example in its own
+#: prompt. Nothing caught it: the sentence carried no dose figure and broke no
+#: clinical rule, it simply named a medicine that had nothing to do with her.
+#:
+#: The prompt no longer contains a drug name, but a prompt can be talked
+#: around and a check over the final text cannot - which is the whole reason
+#: this module exists.
+#:
+#: This list is a FLOOR, not the defence. `check()` is also given every
+#: medicine name the database knows about, which grows with use. These are
+#: the ones a model reaches for unprompted: the common Pakistani pharmacy
+#: shelf, plus the generics behind them.
+COMMON_MEDICINE_NAMES = {
+    "panadol", "paracetamol", "acetaminophen", "calpol", "disprin", "aspirin",
+    "brufen", "ibuprofen", "ponstan", "mefenamic", "voltral", "diclofenac",
+    "augmentin", "amoxil", "amoxicillin", "azithromycin", "azomax", "flagyl",
+    "metronidazole", "septran", "ciprofloxacin", "ciproxin",
+    "metformin", "glucophage", "insulin", "amlodipine", "norvasc",
+    "atenolol", "tenormin", "inderal", "propranolol", "losartan", "concor",
+    "risek", "omeprazole", "nexium", "esomeprazole", "motilium", "domperidone",
+    "arinac", "gravinate", "surbex", "cac", "lipitor", "atorvastatin",
+    "warfarin", "clopidogrel", "ecosprin", "thyroxine", "eltroxin",
+}
+
+
+def _words(text: str) -> set[str]:
+    """Lowercased word tokens, for name matching."""
+    return set(re.findall(r"[a-z]+", (text or "").lower()))
+
+
+def names_foreign_medicine(draft: str, own: list[str] | None,
+                           known: list[str] | None = None) -> str | None:
+    """A medicine named in `draft` that is not one of this patient's.
+
+    `own` is whatever the database holds for them - names, labels, strengths.
+    `known` is every medicine name the system has seen, so the check gets
+    sharper as more are added. Returns the offending name, or None.
+
+    Only whole words count. A patient on "Panadol 500mg" may of course be sent
+    "Panadol", and a name that is merely a substring of a longer word is not a
+    mention.
+    """
+    in_draft = _words(draft)
+    if not in_draft:
+        return None
+
+    mine = set()
+    for text in own or []:
+        mine |= _words(text)
+
+    corpus = set(COMMON_MEDICINE_NAMES)
+    for text in known or []:
+        corpus |= _words(text)
+
+    for name in sorted(corpus - mine):
+        if name in in_draft:
+            return name
+    return None
+
+
 @dataclass
 class GuardrailResult:
     """Outcome of checking one draft message."""
@@ -196,7 +261,8 @@ def contains_unknown_dose_figure(draft: str, known_texts: list[str]) -> str | No
 
 def check(draft: str, patient=None, intent=None,
           known_texts: list[str] | None = None,
-          caretaker_name: str = "aap ke ghar walon") -> GuardrailResult:
+          caretaker_name: str = "aap ke ghar walon",
+          known_medicines: list[str] | None = None) -> GuardrailResult:
     """Check one outbound draft. Called on every message, with no exceptions.
 
     `known_texts` should carry the patient's medicine names, strengths and any
@@ -228,6 +294,11 @@ def check(draft: str, patient=None, intent=None,
     if offending:
         log.warning("guardrail unknown_dose_figure matched %r", offending)
         return refuse("unknown_dose_figure")
+
+    stranger = names_foreign_medicine(text, known_texts, known_medicines)
+    if stranger:
+        log.warning("guardrail foreign_medicine matched %r", stranger)
+        return refuse("foreign_medicine")
 
     return GuardrailResult(allowed=True, message=text)
 
