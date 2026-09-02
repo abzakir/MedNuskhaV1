@@ -28,8 +28,8 @@ from app.agent import knowledge
 from app.config import settings
 from app.db import get_session
 from app.models import (Caretaker, DoseEvent, Family, Medicine,
-                        MedicineReference, MessageLog, Patient, Report,
-                        Schedule, SymptomReport)
+                        MedicineReference, MessageLog, Patient, Prescription,
+                        Report, Schedule, SymptomReport)
 from app.whatsapp.client import normalise_number
 
 log = logging.getLogger(__name__)
@@ -281,6 +281,17 @@ def _local(dt: datetime) -> datetime:
     return dt.astimezone(settings.tz)
 
 
+def _local_today() -> date:
+    """Today in Asia/Karachi, which is the only calendar this system has.
+
+    `date.today()` is the SERVER's date. Karachi is UTC+5, so on any UTC host
+    - which is every host we deploy to - the two disagree for five hours every
+    evening, and a course started at 01:00 Karachi time would be dated to
+    yesterday and run a day short.
+    """
+    return datetime.now(settings.tz).date()
+
+
 def _today_bounds() -> tuple[datetime, datetime]:
     now_local = datetime.now(settings.tz)
     start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -463,6 +474,20 @@ def delete_me(confirm: str = Query(""),
         session.delete(message)
     session.commit()
 
+    # So does a prescription they uploaded or confirmed. The row belongs to
+    # the patient, not to them, so only the attribution goes - and if the
+    # patient went with them above, the row is already gone.
+    for shot in session.exec(
+            select(Prescription).where(
+                (Prescription.uploaded_by == caretaker_id)
+                | (Prescription.confirmed_by == caretaker_id))).all():
+        if shot.uploaded_by == caretaker_id:
+            shot.uploaded_by = None
+        if shot.confirmed_by == caretaker_id:
+            shot.confirmed_by = None
+        session.add(shot)
+    session.commit()
+
     session.delete(caretaker)
     session.commit()
 
@@ -533,14 +558,40 @@ def list_patients(caretaker: Caretaker = Depends(current_caretaker),
     return out
 
 
+def _number_taken(existing: Patient, caretaker: Caretaker) -> str:
+    """Why this WhatsApp number cannot be used, and what to do about it.
+
+    `patient.whatsapp_number` is UNIQUE across the whole system, and it has to
+    be: two families both reminding one handset would talk over each other,
+    and a reply could not be attributed to either.
+
+    But "a patient with that WhatsApp number already exists" is a dead end for
+    the one person who most needs to understand it. Reported 2026-09-02: a
+    caretaker signed in with a second Google account saw "Nobody added yet",
+    typed their mother's number, and was told she already existed - with no
+    way to find her and no way forward. She was in the first account's family.
+
+    So the two cases are told apart. WHO holds it is still not revealed when
+    it is another family - that would leak one account's patients to another -
+    but the fact that it is elsewhere, and both ways out, are said plainly.
+    """
+    if existing.family_id == caretaker.family_id:
+        return (f"You have already added {existing.name} on that number. "
+                f"Open them from your patient list instead of adding them again.")
+    return ("That WhatsApp number is already registered to a different "
+            "MedNuskha account. If that account is yours, sign out and sign "
+            "in with it to manage them there - or remove them from it first, "
+            "which frees the number to be added here.")
+
+
 @router.post("/patients", status_code=201)
 def create_patient(body: PatientIn,
                    caretaker: Caretaker = Depends(current_caretaker),
                    session: Session = Depends(get_session)) -> dict:
     existing = session.exec(
         select(Patient).where(Patient.whatsapp_number == body.whatsapp_number)).first()
-    if existing:
-        raise HTTPException(409, "a patient with that WhatsApp number already exists")
+    if existing is not None:
+        raise HTTPException(409, _number_taken(existing, caretaker))
 
     patient = Patient(family_id=caretaker.family_id, name=body.name.strip(),
                       whatsapp_number=body.whatsapp_number, language=body.language,
@@ -620,9 +671,9 @@ def update_patient(patient_id: str, body: PatientEdit,
             .where(Patient.whatsapp_number == body.whatsapp_number)
             .where(Patient.id != patient.id)).first()
         if clash:
-            # Deliberately vague about who: it may be another family's patient.
-            raise HTTPException(
-                409, "That WhatsApp number is already registered to someone else.")
+            # Deliberately vague about WHO, for the same reason as on create -
+            # but not about what to do next.
+            raise HTTPException(409, _number_taken(clash, caretaker))
 
         patient.whatsapp_number = body.whatsapp_number
         patient.opted_in = False
@@ -709,6 +760,9 @@ def _erase_patient(session: Session, patient: Patient) -> dict:
     for row in session.exec(select(Report).where(Report.patient_id == pid)).all():
         session.delete(row)
         removed["reports"] += 1
+    for row in session.exec(
+            select(Prescription).where(Prescription.patient_id == pid)).all():
+        session.delete(row)
     session.commit()
 
     for dose_id in dose_ids:
@@ -770,7 +824,7 @@ def get_patient(patient_id: str,
                 caretaker: Caretaker = Depends(current_caretaker),
                 session: Session = Depends(get_session)) -> dict:
     patient = _owned_patient(patient_id, caretaker, session)
-    today = date.today()
+    today = _local_today()
 
     medicines = []
     for medicine in session.exec(
@@ -974,7 +1028,7 @@ async def create_medicine(body: MedicineIn,
     session.commit()
     session.refresh(medicine)
 
-    start = date.today()
+    start = _local_today()
     # end_date is INCLUSIVE - the last day a dose is due (SCHEMA.md).
     schedule = Schedule(medicine_id=medicine.id, dose_times=body.dose_times,
                         duration_days=body.duration_days, start_date=start,

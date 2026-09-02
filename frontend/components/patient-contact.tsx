@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, type PatientDetail } from "@/lib/api";
+import { normalizeNumber } from "@/lib/utils";
 
 export function PatientContact({
   patient,
@@ -35,7 +36,8 @@ export function PatientContact({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const numberChanged = digits(number) !== digits(patient.whatsapp_number);
+  const numberChanged =
+    normalizeNumber(number) !== normalizeNumber(patient.whatsapp_number);
   const nothingChanged =
     name.trim() === patient.name && !numberChanged && language === patient.language;
 
@@ -54,7 +56,7 @@ export function PatientContact({
     try {
       await api.updatePatient(patient.id, {
         name: name.trim(),
-        whatsapp_number: digits(number),
+        whatsapp_number: normalizeNumber(number),
         language,
       });
       setOpen(false);
@@ -155,9 +157,4 @@ export function PatientContact({
       </div>
     </form>
   );
-}
-
-/** The server stores digits only; compare like for like. */
-function digits(value: string): string {
-  return (value || "").replace(/\D/g, "").replace(/^0+/, "");
 }

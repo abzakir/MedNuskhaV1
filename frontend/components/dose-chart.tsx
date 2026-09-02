@@ -135,7 +135,12 @@ function buildColumns(doses: ChartDose[], days: number): Column[] {
     else byDay.set(key, [dose]);
   }
 
-  const today = new Date();
+  // Karachi, not the browser. Every `scheduled_at` the API returns is already
+  // in Asia/Karachi, so anchoring the walk to the viewer's own clock shifts
+  // the whole window for a caretaker abroad — and an overseas child watching a
+  // parent in Pakistan is the ordinary case, not the edge one. From London at
+  // 21:00 it is already tomorrow in Karachi, and today's column vanished.
+  const today = karachiNow();
   const todayKey = localKey(today);
 
   // Walk backwards from today so the chart always ends on the current day,
@@ -157,6 +162,26 @@ function buildColumns(doses: ChartDose[], days: number): Column[] {
       ),
     }))
     .filter((col) => col.doses.length > 0 || col.isToday);
+}
+
+/** Now, as a Date whose Y/M/D read as the current Asia/Karachi calendar day. */
+function karachiNow(): Date {
+  try {
+    // en-CA formats as YYYY-MM-DD, which is exactly the key shape.
+    const [y, m, d] = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Karachi",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+      .format(new Date())
+      .split("-")
+      .map(Number);
+    return new Date(y, m - 1, d);
+  } catch {
+    // A browser without that time zone in its ICU data still gets a chart.
+    return new Date();
+  }
 }
 
 function localKey(d: Date): string {

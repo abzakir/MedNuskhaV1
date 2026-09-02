@@ -218,7 +218,12 @@ export default function AddMedicinePage() {
           <div className="rounded-xl border bg-card p-6">
             <h2 className="font-medium">When should they take it?</h2>
             <div className="mt-4 flex flex-wrap gap-2">
-              {COMMON_TIMES.map((t) => (
+              {/* The union, not just the common four: a time added below has
+                  to be removable, and mapping only COMMON_TIMES left a custom
+                  one selected with no way to take it off again. */}
+              {Array.from(new Set([...COMMON_TIMES, ...times]))
+                .sort()
+                .map((t) => (
                 <button
                   key={t}
                   type="button"
