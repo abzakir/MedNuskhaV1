@@ -35,9 +35,11 @@ STRINGS: dict[str, dict[str, str]] = {
     # ------------------------------------------------------------------
     # dose flow
     # ------------------------------------------------------------------
+    # {hour} is the dose's own time - "8" on the hour, "9:30" otherwise (see
+    # ticker.local_time_label), so the English cannot say "o'clock".
     "dose_reminder": {
         "ur": "{name} ji, {hour} baj gaye - {medicine} lene ka waqt hai. {note}",
-        "en": "{name} ji, it's {hour} o'clock - time to take {medicine}. {note}",
+        "en": "{name} ji, it's {hour} - time to take {medicine}. {note}",
     },
     "dose_followup": {
         "ur": "{name} ji, sirf yaad dila rahe hain - {medicine} abhi baaki hai.",
@@ -66,7 +68,7 @@ STRINGS: dict[str, dict[str, str]] = {
     "caretaker_alert": {
         "ur": ("{patient} ne aaj {hour} baje ki {medicine} confirm nahi ki. "
                "Do baar yaad dilaya gaya hai."),
-        "en": ("{patient} has not confirmed the {hour} o'clock {medicine} today. "
+        "en": ("{patient} has not confirmed {medicine} at {hour} today. "
                "Two reminders have been sent."),
     },
     "caretaker_late_resolved": {
@@ -329,10 +331,42 @@ def period_word(hour24: int) -> str:
 
 SPOKEN: dict[str, str] = {
     "dose_reminder": "جی، {period} کے {hour} بج گئے۔ {medicine} لینے کا وقت ہے۔",
+    #: The same line for a dose that is not on the hour. Saying only the hour
+    #: tells a 9:30 patient the wrong time, and the four ways of saying it were
+    #: measured on 2026-08-30 by synthesising each and transcribing it back:
+    #:
+    #:   "9 بج گئے"            -> "نو بج گئے"                  clean, WRONG time
+    #:   "9:30 بج گئے"         -> "نو بج کر تیس منٹ بج گئے"    right, but says
+    #:                                                          "baj kar ... baj gaye"
+    #:   "9 بج کر 30 منٹ ہوئے" -> "نو بج کر تیس منٹ ہوئے"      clean and right
+    #:   "ساڑھے 9 بج گئے"      -> "ساڑھے نو بج گئے"            best Urdu, :30 only
+    #:
+    #: The third is the one that is both grammatical and general - سواء and
+    #: پونے would each need their own case, and a template per quarter-hour is
+    #: more spelling of Urdu than this product should be inventing.
+    "dose_reminder_minutes":
+        "جی، {period} کے {hour} بج کر {minute} منٹ ہوئے۔ {medicine} لینے کا وقت ہے۔",
     "dose_followup": "جی، صرف یاد دلا رہے ہیں۔ {medicine} ابھی باقی ہے۔",
     "dose_taken_ack": "شکریہ۔ {medicine} لے لی، لکھ لیا ہے۔",
     "dose_late_ack": "شکریہ۔ {medicine} لے لی، لکھ لیا ہے۔",
 }
+
+
+#: A spoken key that is a second way of saying another message, not a message
+#: of its own. `dose_reminder_minutes` is the 9:30 wording of `dose_reminder`;
+#: the text the patient reads is still `dose_reminder`, with "9:30" in {hour}.
+#:
+#: Declared rather than inferred from the name, so "every spoken line has a
+#: text message behind it" stays a checkable guarantee instead of a naming
+#: convention somebody can break by accident. See tests/test_voice.py.
+SPOKEN_VARIANTS: dict[str, str] = {
+    "dose_reminder_minutes": "dose_reminder",
+}
+
+
+def text_key_for(spoken_key: str) -> str:
+    """The message a spoken line belongs to - itself, unless it is a variant."""
+    return SPOKEN_VARIANTS.get(spoken_key, spoken_key)
 
 
 def spoken(key: str, **kwargs) -> str | None:

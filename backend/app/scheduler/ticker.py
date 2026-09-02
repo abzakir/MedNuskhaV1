@@ -54,8 +54,33 @@ _LOCK_KEY = 8_23_2026
 #: up and fires a burst of stale reminders at a 68-year-old.
 _STALE_GRACE = timedelta(minutes=5)
 
+
+def _remindable_from() -> datetime:
+    """The oldest dose time still worth creating a row for.
+
+    A dose whose time has already gone by this far can never be reminded - it
+    can only be written straight to MISSED, recording a failure against a
+    patient nobody ever asked anything of. Adding a medicine at 2pm with a
+    morning dose did exactly that: the 08:00 row was created at 14:00 and the
+    very next tick marked it missed, five hours before the medicine existed.
+
+    Nothing real is lost by refusing it. Materialisation runs 24 hours ahead,
+    and again the moment a medicine is added, so a dose that genuinely went
+    unanswered already had a row long before it came due. The only rows born
+    this late belong to a schedule that did not exist yet, or to a patient who
+    was opted out or stopped at the time - and in both cases the honest record
+    is no dose at all, not a missed one.
+
+    The window is the ticker's own staleness rule, so a dose that IS still
+    worth reminding about - a medicine added at 08:20 for an 08:00 dose - is
+    still created and still goes out.
+    """
+    return _now() - (timedelta(minutes=settings.escalate_minutes) + _STALE_GRACE)
+
 _scheduler: AsyncIOScheduler | None = None
 _lock_conn = None
+#: So a standby process says so once rather than every minute.
+_said_standing_down = False
 
 
 # --------------------------------------------------------------------------
@@ -78,9 +103,25 @@ def to_utc(day: date, hhmm: str) -> datetime:
     return local.astimezone(timezone.utc)
 
 
-def local_hour_label(when: datetime) -> str:
-    """"8" for both 08:00 and 20:00 - how the reminder reads aloud in Urdu."""
-    return str(int(when.astimezone(settings.tz).strftime("%I")))
+def local_time_label(when: datetime) -> str:
+    """The dose's own time, as the reminder says it: "8", or "9:30".
+
+    Bare hour when the dose is on the hour - "8" for both 08:00 and 20:00, the
+    way it reads aloud in Urdu - and the full time when it is not, because a
+    patient told "9 baj gaye" for a 9:30 dose is being told the wrong time.
+
+    **`when` may be naive.** dose_event timestamps come back from Postgres
+    without a tzinfo, and `.astimezone()` on a naive datetime does not assume
+    UTC - it assumes the machine's own timezone. On a PKT laptop that read the
+    stored 04:30 UTC as 04:30 PKT and announced a 09:30 dose as "4 baj gaye".
+    Reported from a real phone, 2026-08-30. Invisible on a UTC server, which
+    is why it survived: there, the wrong assumption happens to be right.
+    """
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    local = when.astimezone(settings.tz)
+    hour = str(int(local.strftime("%I")))
+    return hour if local.minute == 0 else f"{hour}:{local.minute:02d}"
 
 
 def _clean_var(value: str | None, fallback: str = "-") -> str:
@@ -108,8 +149,13 @@ def materialise_doses(hours_ahead: int = 24) -> int:
     (invariant 5).
 
     `schedule.end_date` is INCLUSIVE - the last day a dose is due (SCHEMA.md).
+
+    A dose that is already too old to remind is not created at all - the
+    agent is answerable for a medicine from the moment it is added, not
+    retroactively. See `_remindable_from`.
     """
     horizon = _now() + timedelta(hours=hours_ahead)
+    earliest = _remindable_from()
     today = local_today()
     created = 0
 
@@ -125,10 +171,16 @@ def materialise_doses(hours_ahead: int = 24) -> int:
             .where(Schedule.end_date >= today)
         ).all()
 
+        # A dose on a day later than the horizon's own local date is always
+        # past the horizon, so the walk stops there. Without this cap a 365-day
+        # course spins through 365 days on every tick to discard all but one.
+        last_day = horizon.astimezone(settings.tz).date()
+
         payload: list[dict] = []
         for schedule, medicine in rows:
             day = max(schedule.start_date, today)
-            while day <= schedule.end_date:
+            stop = min(schedule.end_date, last_day)
+            while day <= stop:
                 for hhmm in schedule.dose_times or []:
                     try:
                         when = to_utc(day, hhmm)
@@ -137,6 +189,11 @@ def materialise_doses(hours_ahead: int = 24) -> int:
                                     schedule.id, hhmm)
                         continue
                     if when > horizon:
+                        continue
+                    if when < earliest:
+                        # Already past reminding when we first saw it - see
+                        # _remindable_from(). Never a dose, rather than an
+                        # instantly missed one.
                         continue
                     payload.append({
                         "id": new_id(),
@@ -245,7 +302,7 @@ async def send_reminder(dose_id: str) -> bool:
             lang=ctx["patient_language"],
             body_vars=[
                 _clean_var(ctx["patient_name"], "Ji"),
-                _clean_var(local_hour_label(dose.scheduled_at), "abhi"),
+                _clean_var(local_time_label(dose.scheduled_at), "abhi"),
                 _clean_var(ctx["medicine_label"], "dawai"),
                 _clean_var(ctx["food_note"], "Shukriya."),
             ],
@@ -339,7 +396,7 @@ async def _attach_followup_voice(dose_id: str, ctx: dict) -> bool:
         audio = await asyncio.to_thread(store.get, key)
         if audio is None:
             # Not on the reminder path: this dose was reminded 15 minutes ago.
-            if await tts.ensure_cached(line) is None:
+            if await tts.ensure_spoken(line, ctx["medicine_label"]) is None:
                 return False
             audio = await asyncio.to_thread(store.get, key)
         if not audio:
@@ -362,13 +419,17 @@ async def escalate(dose_id: str) -> bool:
     if not await asyncio.to_thread(sm.mark_missed, dose_id):
         return False
 
-    if not ctx["caretakers"]:
-        log.warning("dose %s missed but the family has no caretaker to alert",
-                    dose_id)
+    # `caretaker.phone` is nullable - somebody who signed up with an email and
+    # has not added their number yet cannot be messaged, and attempting it
+    # raises inside the loop for every missed dose.
+    reachable = [c for c in ctx["caretakers"] if c.get("phone")]
+    if not reachable:
+        log.warning("dose %s missed but no caretaker in the family has a "
+                    "WhatsApp number to alert", dose_id)
         return False
 
     reached = False
-    for caretaker in ctx["caretakers"]:
+    for caretaker in reachable:
         try:
             await wa.send_template(
                 to=caretaker["phone"],
@@ -376,7 +437,7 @@ async def escalate(dose_id: str) -> bool:
                 lang=caretaker.get("language", "ur"),
                 body_vars=[
                     _clean_var(ctx["patient_name"], "Patient"),
-                    _clean_var(local_hour_label(dose.scheduled_at), "aaj"),
+                    _clean_var(local_time_label(dose.scheduled_at), "aaj"),
                     _clean_var(ctx["medicine_label"], "dawai"),
                 ],
             )
@@ -402,9 +463,14 @@ async def notify_late_resolution(dose_id: str) -> None:
     _, ctx = loaded
 
     for caretaker in ctx["caretakers"]:
-        body = (f"{ctx['patient_name']} ne abhi {ctx['medicine_label']} "
-                f"lene ki tasdeeq kar di hai - thori der se. "
-                f"Ye aap ki agli report mein bhi likha jayega.")
+        if not caretaker.get("phone"):
+            continue
+        # Invariant 12: the copy lives in i18n/strings.py, and a caretaker who
+        # reads English is told this in English like every other message.
+        body = strings.t("caretaker_late_resolved",
+                         caretaker.get("language") or "ur",
+                         patient=ctx["patient_name"],
+                         medicine=ctx["medicine_label"])
         try:
             await wa.send_text(caretaker["phone"], body)
         except Exception as exc:  # noqa: BLE001
@@ -476,6 +542,9 @@ async def course_end_reports() -> dict:
     from app.reports import service, storage
 
     counts = {"courses": 0, "reports": 0, "messaged": 0}
+    if not _holds_lock():
+        return counts
+
     try:
         courses = await asyncio.to_thread(service.finished_courses)
     except Exception as exc:  # noqa: BLE001 - never take the scheduler down
@@ -567,6 +636,12 @@ async def tick() -> dict:
     """One minute of work. Safe to run concurrently with itself."""
     counts = {"materialised": 0, "reminded": 0, "followed_up": 0,
               "escalated": 0, "stale_missed": 0}
+
+    # Section 17: exactly one process sends. Checked every minute rather than
+    # once at startup - see _holds_lock.
+    if not _holds_lock():
+        return counts
+
     try:
         counts["materialised"] = await asyncio.to_thread(materialise_doses)
 
@@ -614,6 +689,11 @@ def _acquire_lock() -> bool:
         got = conn.execute(
             sql_text("SELECT pg_try_advisory_lock(:k)"), {"k": _LOCK_KEY}
         ).scalar()
+        # COMMIT, or this connection sits "idle in transaction" forever and
+        # Supabase's pooler closes it within minutes - taking the lock with
+        # it. `pg_try_advisory_lock` is SESSION scoped, so it survives the
+        # commit; only `pg_advisory_xact_lock` would not.
+        conn.commit()
         if got:
             _lock_conn = conn
             return True
@@ -624,6 +704,64 @@ def _acquire_lock() -> bool:
         return False
 
 
+def _holds_lock() -> bool:
+    """True while THIS process still holds the ticker lock, re-taking it if
+    the connection underneath it died.
+
+    A session-level advisory lock lives and dies with its connection, and
+    `_lock_conn` is held open outside the pool with no `pool_pre_ping` to
+    notice when Supabase's pooler closes it - which it does after any idle
+    spell, a laptop sleep or a network blip. The lock is then silently gone
+    while this scheduler carries on ticking, and the guarantee it exists to
+    provide is fiction: a second backend finds the lock free, takes it, and
+    both processes send every reminder.
+
+    Observed on 2026-08-30 - after the machine slept from 15:10 to 19:41,
+    `pg_locks` held no advisory lock at all while the ticker was still
+    running happily.
+
+    So: prove the connection is alive on every tick. If it is not, try to take
+    the lock again; if somebody else now holds it, this process stands down
+    rather than double-sending.
+    """
+    global _lock_conn, _said_standing_down
+
+    if _lock_conn is not None:
+        try:
+            _lock_conn.execute(sql_text("SELECT 1"))
+            # Leaving this uncommitted is what killed the connection it is
+            # meant to be checking: an open transaction makes the connection
+            # "idle in transaction", which Supabase's pooler reaps far sooner
+            # than an idle one. The ping was causing the drop it detected -
+            # a lost-and-retaken lock every few minutes, in the logs on
+            # 2026-08-31.
+            _lock_conn.commit()
+            return True
+        except Exception as exc:  # noqa: BLE001 - the connection is gone
+            log.warning("the scheduler lock connection died (%s) - taking it "
+                        "again", exc)
+            try:
+                _lock_conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            _lock_conn = None
+
+    if _acquire_lock():
+        _said_standing_down = False
+        log.info("scheduler lock acquired - this process is now the one that "
+                 "sends")
+        return True
+
+    if not _said_standing_down:
+        _said_standing_down = True
+        log.error("STANDING DOWN: another process holds the scheduler lock. No "
+                  "reminders will be sent from here until it lets go - which "
+                  "is the point, because both of us sending would remind every "
+                  "patient twice. Checked again every minute; this is logged "
+                  "once, not once a minute.")
+    return False
+
+
 def _release_lock() -> None:
     global _lock_conn
     if _lock_conn is None:
@@ -631,6 +769,7 @@ def _release_lock() -> None:
     try:
         _lock_conn.execute(sql_text("SELECT pg_advisory_unlock(:k)"),
                            {"k": _LOCK_KEY})
+        _lock_conn.commit()
         _lock_conn.close()
     except Exception:  # noqa: BLE001
         pass
@@ -649,11 +788,21 @@ def start_scheduler() -> bool:
         log.warning("scheduler not started - no DATABASE_URL")
         return False
 
-    if not _acquire_lock():
-        log.warning("scheduler NOT started - another process holds the lock. "
-                    "This is the guard against uvicorn --reload or a second "
-                    "worker firing every reminder twice.")
-        return False
+    # Start EITHER WAY, and let `tick` decide each minute whether this process
+    # is the one that sends.
+    #
+    # Refusing to start without the lock left no way back: the retry lives in
+    # `tick`, which never runs if the scheduler never started. A restart where
+    # the lock was held for a few seconds - the previous process still closing
+    # its connection through the pooler, which is EVERY restart - left the
+    # backend permanently reminder-less, answering "scheduler: stopped" and
+    # recovering only if a human noticed. Seen on 2026-08-31: fifteen minutes
+    # up, zero ticks, no reminders.
+    #
+    # Standing by is also the better behaviour with two real processes: the
+    # loser does nothing and takes over the moment the winner lets go, instead
+    # of needing to be restarted by hand.
+    holds = _acquire_lock()
 
     _scheduler = AsyncIOScheduler(timezone=str(settings.tz))
     _scheduler.add_job(tick, "interval", minutes=1, id="dose_tick",
@@ -665,9 +814,14 @@ def start_scheduler() -> bool:
                        coalesce=True, misfire_grace_time=3600)
     _scheduler.start()
 
-    log.info("scheduler started - followup=%dmin escalate=%dmin tz=%s",
-             settings.followup_minutes, settings.escalate_minutes,
-             settings.timezone)
+    if holds:
+        log.info("scheduler started - followup=%dmin escalate=%dmin tz=%s",
+                 settings.followup_minutes, settings.escalate_minutes,
+                 settings.timezone)
+    else:
+        log.warning("scheduler started ON STANDBY - another process holds the "
+                    "lock, so nothing is sent from here. It takes over "
+                    "automatically within a minute of that process letting go.")
     return True
 
 
@@ -682,3 +836,21 @@ def stop_scheduler() -> None:
 
 def is_running() -> bool:
     return _scheduler is not None
+
+
+def lock_state() -> str:
+    """Whether this process is the one that sends, for /api/health.
+
+    Deliberately read-only: it never takes the lock, so asking about it cannot
+    change the answer. `_holds_lock` does the re-acquiring, on the tick.
+    """
+    if _scheduler is None:
+        return "not running"
+    if _lock_conn is None:
+        return "not held"
+    try:
+        _lock_conn.execute(sql_text("SELECT 1"))
+        _lock_conn.commit()          # same reason as _holds_lock
+        return "held"
+    except Exception:  # noqa: BLE001 - reporting, never raising
+        return "lost - the next tick will try to take it again"

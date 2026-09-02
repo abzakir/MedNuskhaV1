@@ -16,7 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router as api_router
 from app.config import settings
 from app.db import check_connection, init_db
-from app.scheduler.ticker import is_running, start_scheduler, stop_scheduler
+from app.scheduler.ticker import (is_running, lock_state, start_scheduler,
+                                  stop_scheduler)
 from app.whatsapp.client import close_client
 from app.whatsapp.webhook import router as webhook_router
 
@@ -84,8 +85,8 @@ app = FastAPI(
 # `*` is the default and is safe here as it stands: the dashboard authenticates
 # with a Bearer token in a header, never a cookie, and allow_credentials stays
 # False - so a hostile page can make a request but has nothing to send with it.
-# Set CORS_ORIGINS to the dashboard's real URL in production anyway; there is
-# no reason for any other origin to be calling this API.
+# Set CORS_ALLOW_ORIGINS to the dashboard's real URL in production anyway;
+# there is no reason for any other origin to be calling this API.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -137,6 +138,10 @@ async def health() -> dict:
         "database": "connected" if check_connection() else "not connected",
         "whatsapp": await _whatsapp_health(),
         "scheduler": "running" if is_running() else "stopped",
+        # Whether this process is the one that actually sends. The advisory
+        # lock can be lost without the scheduler noticing (see ticker
+        # ._holds_lock), and "running" alone would then be misleading.
+        "scheduler_lock": lock_state(),
         "llm": _llm_health(),
         "missing_env": settings.missing_required(),
     }
