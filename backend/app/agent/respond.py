@@ -452,10 +452,19 @@ async def _on_question(intent, patient, lang, caretakers, primary, known) -> Non
         or info.purpose_en or info.purpose_ur or ""
     body = strings.t("medicine_info", lang,
                      medicine=info.canonical_name.title(),
-                     purpose=purpose,
+                     # The template supplies the full stop; a
+                     # caretaker-confirmed sentence usually ends with
+                     # one of its own, and the pair read as
+                     # "...hoti hai.. Khane ke baad lein" on a phone.
+                     purpose=_unpunctuated(purpose),
                      food_rule=info.food_rule or "")
     await _send_checked(patient, " ".join(body.split()), intent=intent,
                         caretakers=caretakers, known_texts=known)
+
+
+def _unpunctuated(text: str) -> str:
+    """Trim a trailing sentence stop so the template can add its own."""
+    return (text or "").strip().rstrip("۔.").strip()
 
 
 async def _on_symptom(intent, patient, lang, caretakers, primary, known) -> None:

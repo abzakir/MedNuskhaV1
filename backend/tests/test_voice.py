@@ -373,3 +373,82 @@ def test_no_caller_bypasses_the_check():
         assert "ensure_cached(" not in text, (
             f"{rel} calls ensure_cached directly - use ensure_spoken so the "
             f"medicine name is checked")
+
+
+# --------------------------------------------------------------------------
+# pre-generation that never finished
+# --------------------------------------------------------------------------
+#
+# Pre-generation is a background task fired once, when a caretaker confirms a
+# schedule. If the process restarts before it finishes - a deploy, a crash, a
+# laptop closing - nothing retried it, and that medicine had no voice note for
+# the rest of its course. Found on live data 2026-09-03: an Inderal course
+# added two days earlier, every dose text-only, with the name sitting in the
+# text message the whole time and nothing wrong with it.
+
+
+def test_cached_audio_is_not_re_verified(monkeypatch):
+    """A cached file IS a verified one - only verified audio is ever written.
+
+    Re-proving it would cost two syntheses and two transcriptions per sentence
+    every time anything asked, which is what would make a periodic top-up
+    expensive instead of free.
+    """
+    tts._VERIFIED.clear()
+    line = _line("Panadol 500mg")
+
+    monkeypatch.setattr(store, "has_local", lambda k: True)
+    monkeypatch.setattr(store, "key_for", lambda t, v=None: "cached.ogg")
+
+    async def never(*_a, **_k):
+        raise AssertionError("cached audio must not be re-verified")
+
+    monkeypatch.setattr(tts, "says_the_medicine", never)
+    assert asyncio.run(tts.ensure_spoken(line, "Panadol 500mg")) == "cached.ogg"
+
+
+def test_the_top_up_regenerates_what_pre_generation_missed(monkeypatch):
+    """The repair itself: a schedule with no audio gets it on the next pass."""
+    from app.scheduler import ticker
+
+    calls = []
+
+    async def pregenerate(schedule_id):
+        calls.append(schedule_id)
+        return 1
+
+    monkeypatch.setattr(tts, "pregenerate_for_schedule", pregenerate)
+    monkeypatch.setattr(ticker, "session_scope", _schedules(["sched-1", "sched-2"]))
+
+    assert asyncio.run(ticker.top_up_voice_notes()) == 2
+    assert calls == ["sched-1", "sched-2"]
+
+
+def test_the_top_up_never_takes_the_scheduler_down(monkeypatch):
+    """One unreachable course must not stop the rest, or the tick."""
+    from app.scheduler import ticker
+
+    async def boom(schedule_id):
+        if schedule_id == "sched-1":
+            raise RuntimeError("edge-tts unreachable")
+        return 1
+
+    monkeypatch.setattr(tts, "pregenerate_for_schedule", boom)
+    monkeypatch.setattr(ticker, "session_scope", _schedules(["sched-1", "sched-2"]))
+
+    assert asyncio.run(ticker.top_up_voice_notes()) == 1
+
+
+def _schedules(ids):
+    """A session_scope() yielding these schedule rows."""
+    class Row:
+        def __init__(self, i): self.id, self.dose_times = i, ["08:00"]
+
+    class Session:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def exec(self, _q):
+            class R:
+                def all(_s): return [Row(i) for i in ids]
+            return R()
+    return lambda: Session()

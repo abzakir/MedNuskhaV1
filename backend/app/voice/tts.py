@@ -163,8 +163,17 @@ async def ensure_spoken(text: str, medicine: str | None) -> str | None:
     clean = " ".join((text or "").split())
     if not clean:
         return None
+
+    # Audio already on disk was written by this same function, which only
+    # writes after the check passes - so a cached file IS a verified one, and
+    # re-proving it would cost two syntheses and two transcriptions every time
+    # anything asks. That is what makes the top-up job below free to run.
+    key = store.key_for(clean)
+    if store.has_local(key):
+        return key
+
     if medicine and not await says_the_medicine(clean, medicine):
-        store.forget(store.key_for(clean))
+        store.forget(key)
         return None
     return await ensure_cached(clean)
 

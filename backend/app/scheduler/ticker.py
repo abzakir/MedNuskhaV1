@@ -632,6 +632,54 @@ def _course_context(patient_id: str, medicine_id: str) -> dict:
                 "medicine": label}
 
 
+async def top_up_voice_notes() -> int:
+    """Make sure every running course actually has its audio on disk.
+
+    Pre-generation is a background task fired once, when a caretaker confirms
+    a schedule. If the process restarts before it finishes - a deploy, a crash,
+    a laptop closing - nothing ever retried it, and that medicine had no voice
+    note for the rest of its course. Found on live data 2026-09-03: an Inderal
+    course added two days earlier, every dose text-only, with the name sitting
+    in the message the whole time and nothing wrong with it.
+
+    Runs on its own schedule, never in the reminder path (section 3.4). Free
+    in the steady state: `ensure_spoken` returns immediately for a sentence
+    already on disk, so this is a handful of stat() calls until something is
+    genuinely missing.
+    """
+    from app.voice import store, tts
+
+    made = 0
+    try:
+        with session_scope() as session:
+            schedules = [
+                (row.id, row.dose_times) for row in session.exec(
+                    select(Schedule)
+                    .join(Medicine, Medicine.id == Schedule.medicine_id)
+                    .join(Patient, Patient.id == Medicine.patient_id)
+                    .where(Schedule.active == True)      # noqa: E712
+                    .where(Medicine.active == True)      # noqa: E712
+                    .where(Patient.opted_in == True)     # noqa: E712
+                    .where(Patient.stopped == False)     # noqa: E712
+                    .where(Schedule.end_date >= local_today())
+                ).all()]
+    except Exception as exc:  # noqa: BLE001 - never take the scheduler down
+        log.warning("could not list schedules to top up: %s", exc)
+        return 0
+
+    for schedule_id, _times in schedules:
+        try:
+            made += await tts.pregenerate_for_schedule(schedule_id)
+        except Exception as exc:  # noqa: BLE001 - one bad course, not all
+            log.warning("voice top-up failed for schedule %s: %s",
+                        schedule_id, exc)
+
+    if made:
+        log.info("voice top-up: %d file(s) generated that pre-generation missed",
+                 made)
+    return made
+
+
 async def tick() -> dict:
     """One minute of work. Safe to run concurrently with itself."""
     counts = {"materialised": 0, "reminded": 0, "followed_up": 0,
@@ -809,6 +857,12 @@ def start_scheduler() -> bool:
                        max_instances=1, coalesce=True, misfire_grace_time=55)
     # Phase 6. Early morning local time: the course ended yesterday, and a
     # caretaker would rather find the report waiting than be pinged at 3am.
+    # Catches a pre-generation that never finished - see top_up_voice_notes.
+    # Ten minutes, not one: it is a repair, and a course added now already had
+    # its audio made synchronously when the medicine was confirmed.
+    _scheduler.add_job(top_up_voice_notes, "interval", minutes=10,
+                       id="voice_top_up", max_instances=1, coalesce=True,
+                       misfire_grace_time=300)
     _scheduler.add_job(course_end_reports, "cron", hour=8, minute=5,
                        id="course_end_reports", max_instances=1,
                        coalesce=True, misfire_grace_time=3600)
