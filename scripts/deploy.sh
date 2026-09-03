@@ -68,30 +68,12 @@ echo "waiting for /api/health ..."
 for i in $(seq 1 30); do
     BODY=$(curl -fsS -m 5 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null || true)
     if [ -n "$BODY" ] && echo "$BODY" | grep -q '"status":"ok"'; then
-        echo "$BODY" | python3 -c '
-import json, sys
-
-# Single quotes inside the f-string expressions on purpose. The escaped ones
-# this replaced did not survive the trip through the shell heredoc, and python
-# read the backslash as a line continuation - so the gate crashed, every
-# healthy deploy reported FAILED, and a real failure would have looked
-# identical to it.
-d = json.load(sys.stdin)
-wa = d["whatsapp"]["state"]
-lock = d.get("scheduler_lock")
-print(f"  status     {d['status']}")
-print(f"  database   {d['database']}")
-print(f"  scheduler  {d['scheduler']}  (lock: {lock})")
-print(f"  whatsapp   {wa}")
-
-bad = []
-if d["database"] != "connected": bad.append("database")
-if wa != "connected":            bad.append("whatsapp")
-if lock != "held":               bad.append("scheduler_lock")
-if bad:
-    print("  DEGRADED: " + ", ".join(bad))
-    sys.exit(2)
-'
+        if echo "$BODY" | python3 "$(dirname "$0")/healthgate.py"; then
+            :
+        else
+            echo "FAILED: the stack came up degraded" >&2
+            exit 2
+        fi
         echo "deploy ok"
         exit 0
     fi
