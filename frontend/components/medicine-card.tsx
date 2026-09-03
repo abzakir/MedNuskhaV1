@@ -28,8 +28,22 @@ export function MedicineCard({
   const [note, setNote] = useState<string | null>(null);
 
   const [times, setTimes] = useState<string[]>(s?.dose_times ?? []);
+  const [customTime, setCustomTime] = useState("");
   const [days, setDays] = useState<number>(s?.duration_days ?? 7);
   const [strength, setStrength] = useState(medicine.strength ?? "");
+
+  /** Add on a deliberate action only.
+   *
+   * `<input type="time">` fires onChange for every intermediate value, so
+   * adding there put 11:0, 11:03 and 11:3 on the schedule while somebody
+   * typed 11:32.
+   */
+  function addCustomTime() {
+    const v = customTime.trim();
+    if (!/^\d{2}:\d{2}$/.test(v)) return;
+    setTimes((prev) => (prev.includes(v) ? prev : [...prev, v].sort()));
+    setCustomTime("");
+  }
 
   function toggleTime(t: string) {
     setTimes((prev) =>
@@ -179,11 +193,26 @@ export function MedicineCard({
               <Input
                 type="time"
                 className="w-32"
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v && !times.includes(v)) setTimes([...times, v].sort());
+                value={customTime}
+                onChange={(e) => setCustomTime(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addCustomTime();
+                  }
                 }}
               />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={addCustomTime}
+                disabled={
+                  !/^\d{2}:\d{2}$/.test(customTime) || times.includes(customTime)
+                }
+              >
+                Add
+              </Button>
             </div>
           </div>
 

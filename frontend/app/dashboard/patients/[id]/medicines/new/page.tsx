@@ -36,6 +36,9 @@ export default function AddMedicinePage() {
   const [foodRule, setFoodRule] = useState("");
 
   const [times, setTimes] = useState<string[]>(["08:00"]);
+  //: What is typed in the "other time" box but not yet added. Kept separate
+  //: from `times` on purpose - see addCustomTime.
+  const [customTime, setCustomTime] = useState("");
   const [days, setDays] = useState(7);
 
   const [busy, setBusy] = useState(false);
@@ -91,6 +94,24 @@ export default function AddMedicinePage() {
       setError((err as Error).message);
       setBusy(false);
     }
+  }
+
+  /** Add the typed time, on a deliberate action only.
+   *
+   * `<input type="time">` fires onChange for every intermediate value, so
+   * adding there put 11:0, 11:03 and 11:3 on the schedule while somebody
+   * typed 11:32. Reported from a real medicine that ended up with four times
+   * nobody chose. Adding is now a button press or Enter, never a keystroke.
+   */
+  function addCustomTime() {
+    const v = customTime.trim();
+    if (!/^\d{2}:\d{2}$/.test(v)) return;
+    setTimes((prev) => (prev.includes(v) ? prev : [...prev, v].sort()));
+    setCustomTime("");
+  }
+
+  function removeTime(t: string) {
+    setTimes((prev) => prev.filter((x) => x !== t));
   }
 
   function toggleTime(t: string) {
@@ -247,23 +268,54 @@ export default function AddMedicinePage() {
                   id="custom"
                   type="time"
                   className="w-36"
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (v && !times.includes(v)) setTimes([...times, v].sort());
+                  value={customTime}
+                  onChange={(e) => setCustomTime(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addCustomTime();
+                    }
                   }}
                 />
               </div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={addCustomTime}
+                disabled={!/^\d{2}:\d{2}$/.test(customTime) || times.includes(customTime)}
+              >
+                {times.includes(customTime) ? "Already added" : "Add time"}
+              </Button>
             </div>
 
             {times.length > 0 && (
-              <p className="mt-4 text-sm">
-                <span className="text-muted-foreground">Reminders at </span>
-                <span className="font-mono font-medium">{times.join(", ")}</span>
-                <span className="text-muted-foreground">
-                  {" "}
-                  — {times.length}× a day
-                </span>
-              </p>
+              <div className="mt-4">
+                <p className="text-xs text-muted-foreground">
+                  Reminders at &mdash; tap one to remove it
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {times.map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => removeTime(t)}
+                      title={`Remove ${t}`}
+                      className="group inline-flex items-center gap-1.5 rounded-full border
+                                 border-taken/40 bg-taken-soft px-3 py-1.5 font-mono text-sm
+                                 text-taken transition-colors hover:border-missed/40
+                                 hover:bg-missed-soft hover:text-missed"
+                    >
+                      {t}
+                      <span aria-hidden className="text-xs opacity-60 group-hover:opacity-100">
+                        &times;
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {times.length}&times; a day
+                </p>
+              </div>
             )}
           </div>
 
