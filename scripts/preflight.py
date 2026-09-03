@@ -95,9 +95,13 @@ def main() -> int:
         ok("DEV_AUTH_BYPASS is off")
 
     if not env.get("ALLOWED_NUMBERS"):
-        bad("ALLOWED_NUMBERS is empty - the bridge will send a WhatsApp "
-            "message to ANY number it is handed, including a mistyped one "
-            "belonging to a stranger")
+        warn("ALLOWED_NUMBERS is empty. Since 2026-09-03 this is a warning "
+             "rather than a failure: consent is the primary guard now, and "
+             "nothing reaches a patient who has not replied to the intro "
+             "(section 4.4, agent-side in whatsapp/client.may_send). A "
+             "mistyped number gets one intro message and then silence. Set "
+             "it anyway if you want a hard outer limit on who can be "
+             "reached at all.")
     else:
         numbers = [n for n in env["ALLOWED_NUMBERS"].split(",") if n.strip()]
         ok(f"ALLOWED_NUMBERS restricts sending to {len(numbers)} number(s)")

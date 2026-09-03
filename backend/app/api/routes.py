@@ -593,11 +593,15 @@ def create_patient(body: PatientIn,
     if existing is not None:
         raise HTTPException(409, _number_taken(existing, caretaker))
 
+    # Section 4.4: nothing is sent to a patient who has not opted in, and only
+    # their own "HAAN" sets that. This used to default to true, which meant a
+    # mistyped digit began receiving somebody else's medication reminders
+    # immediately and forever - a wrong number is a perfectly valid patient
+    # row, so nothing downstream could tell. Now a stranger gets one intro
+    # message, ignores it, and never hears from us again.
     patient = Patient(family_id=caretaker.family_id, name=body.name.strip(),
                       whatsapp_number=body.whatsapp_number, language=body.language,
-                      # Reminders start immediately. The opt-in message is sent
-                      # separately and flips this to a confirmed true.
-                      opted_in=True, opted_in_at=datetime.now(timezone.utc))
+                      opted_in=False, opted_in_at=None)
     session.add(patient)
 
     # §8: the caretaker's relation to the patient is set when they link.
@@ -607,9 +611,11 @@ def create_patient(body: PatientIn,
 
     session.commit()
     session.refresh(patient)
-    log.info("caretaker %s added patient %s", caretaker.id, patient.id)
+    log.info("caretaker %s added patient %s (awaiting opt-in)",
+             caretaker.id, patient.id)
     return {"id": patient.id, "name": patient.name,
-            "whatsapp_number": patient.whatsapp_number}
+            "whatsapp_number": patient.whatsapp_number,
+            "opted_in": False, "needs_optin": True}
 
 
 class PatientEdit(BaseModel):

@@ -106,6 +106,60 @@ async def bridge_status() -> dict:
         return {"state": "unreachable", "error": str(exc)}
 
 
+#: The one message a patient may receive before they have agreed to anything.
+#: It is how you ask, so it cannot itself require an answer - and it names no
+#: medicine, no dose and no condition, so a mistyped number costs one polite
+#: sentence and then silence.
+CONSENT_TEMPLATES = frozenset({"patient_optin"})
+
+
+class NotConsented(WhatsAppError):
+    """The recipient has not agreed to receive anything yet (section 4.4)."""
+
+
+def may_send(number: str, template: str | None = None) -> tuple[bool, str]:
+    """Whether we are allowed to send this to this number, and why not.
+
+    Section 4.4: nothing goes to a patient who has not opted in. The check
+    lives here rather than in the bridge because only the backend knows who
+    has agreed - the bridge is deliberately dumb (invariant 6) and its
+    ALLOWED_NUMBERS stays as a static outer net.
+
+    This is what makes a mistyped number safe. A wrong digit is still a
+    perfectly valid `patient` row, so "is this number registered" would have
+    allowed it; "has a human on this handset actually replied" does not. The
+    stranger gets the intro, ignores it, and never hears from us again.
+
+    Caretakers are exempt: they registered themselves on the dashboard, and
+    a missed-dose alert going out is the entire product.
+    """
+    number = normalise_number(number)
+    if not number:
+        return False, "no number"
+    if not settings.database_configured:
+        return True, ""
+
+    try:
+        with session_scope() as session:
+            patient = session.query(Patient).filter(
+                Patient.whatsapp_number == number).first()
+            if patient is None:
+                # A caretaker, or a number we do not know. Unknown numbers are
+                # still refused by the bridge's allowlist.
+                return True, ""
+            if patient.stopped:
+                return False, f"{patient.name} sent STOP"
+            if patient.opted_in:
+                return True, ""
+            if template in CONSENT_TEMPLATES:
+                return True, ""
+            return False, (f"{patient.name} has not opted in yet - only the "
+                           f"intro message may be sent")
+    except Exception as exc:  # noqa: BLE001 - a broken check must not silence
+        log.warning("could not check consent for %s (%s) - allowing", number, exc)
+        return True, ""
+
+
 async def _call(path: str, payload: dict, *, kind: str, body: str | None,
                 template_name: str | None = None,
                 payloads: list[str] | None = None) -> str:
@@ -250,6 +304,10 @@ async def send_template(to: str, template: str, lang: str,
     language code - there is no approval queue any more.
     """
     to = normalise_number(to)
+    allowed, why = await asyncio.to_thread(may_send, to, template)
+    if not allowed:
+        log.warning("refusing %s to %s: %s", template, to, why)
+        raise NotConsented(why)
     body = render(template, lang, body_vars)
 
     labels = TEMPLATE_BUTTONS.get(template, ())
@@ -275,6 +333,10 @@ async def send_template(to: str, template: str, lang: str,
 async def send_text(to: str, body: str) -> str:
     """Send free-form text. No 24-hour window applies on this transport."""
     to = normalise_number(to)
+    allowed, why = await asyncio.to_thread(may_send, to, None)
+    if not allowed:
+        log.warning("refusing text to %s: %s", to, why)
+        raise NotConsented(why)
     return await _call("/send/text", {"to": to, "body": body},
                        kind="text", body=body)
 
@@ -301,6 +363,10 @@ async def send_voice(to: str, storage_key_or_bytes: str | bytes) -> str:
     file attachment an elderly user will never tap (invariant 7).
     """
     to = normalise_number(to)
+    allowed, why = await asyncio.to_thread(may_send, to, None)
+    if not allowed:
+        log.warning("refusing voice note to %s: %s", to, why)
+        raise NotConsented(why)
 
     if isinstance(storage_key_or_bytes, (bytes, bytearray)):
         audio_b64 = base64.b64encode(bytes(storage_key_or_bytes)).decode()
