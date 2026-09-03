@@ -156,3 +156,56 @@ def test_11_a_denial_is_never_read_as_a_confirmation():
     for text in ("nahi li", "maine nahi li", "abhi tak nahi li"):
         got = _fast_intent(text)
         assert got is None or got[0] != "taken", f"{text} -> {got}"
+
+
+# ==========================================================================
+# what counts as "taken"
+# ==========================================================================
+#
+# A wrong `taken` is the worst thing this system can record. It writes a dose
+# into a medical record that nobody swallowed AND switches off the escalation
+# that would have caught it, so the mistake hides itself.
+#
+# On 2026-09-04 a patient wrote "I bought a Panadol." and was answered
+# "Thank you CR sahab ji. panadol taken - it's noted." Buying is not taking.
+# The fast path was right to stay out of it; the model was wrong, so the
+# distinction is named in its prompt now. These pin the wording that fixed it
+# rather than the model, which is why they read the prompt and not the API.
+
+
+def _prompt() -> str:
+    from app.agent.interpret import _SYSTEM
+    return _SYSTEM.lower()
+
+
+def test_12_the_prompt_distinguishes_buying_from_taking():
+    p = _prompt()
+    assert "swallow" in p, "the prompt has to say what taken actually means"
+    assert "bought" in p or "buying" in p, \
+        "the confusion that happened has to be named, not implied"
+
+
+def test_13_the_prompt_sends_future_tense_to_later():
+    """"I will take it now" is not swallowed yet, however imminent - and the
+    escalation has to keep running until it is."""
+    p = _prompt()
+    assert "future tense" in p
+    assert "later" in p
+
+
+def test_14_the_prompt_says_which_way_to_err():
+    """An unnecessary question costs one message. A wrong `taken` costs the
+    record and the escalation together."""
+    p = _prompt()
+    assert "unsure" in p or "cannot tell" in p
+    assert "escalation" in p
+
+
+def test_15_the_fast_path_never_shortcuts_an_acquisition():
+    """These must reach the model, not be decided by a regex."""
+    from app.agent.interpret import _fast_intent
+
+    for text in ("I bought a Panadol.", "maine panadol khareedi",
+                 "I have bought panadol", "panadol laya hoon"):
+        got = _fast_intent(text)
+        assert got is None or got[0] != "taken", f"{text} -> {got}"

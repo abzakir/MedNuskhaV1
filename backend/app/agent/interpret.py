@@ -295,15 +295,25 @@ English, or a mix, and may be a transcript of a voice note, so spelling is \
 often wrong.
 
 Choose exactly one kind:
-- taken: they took the medicine
+- taken: they have actually SWALLOWED the dose. This is the only kind that
+  records a dose as taken and switches off the escalation to their family, so
+  be strict about it. Buying it, collecting it, having it in the house,
+  finding it, or being about to take it are NOT taken - "I bought a Panadol"
+  and "maine panadol khareedi" are not confirmations, they are news.
 - not_taken: they did NOT take it and gave a reason (finished the strip, cannot \
 find it, feeling too unwell)
-- later: they will take it shortly ("abhi nahi", "baad mein")
+- later: they have not taken it yet but intend to. ANY future tense belongs
+  here, however imminent - "I will take it now", "abhi leta hoon", "baad mein",
+  "abhi nahi". It is not swallowed until it is swallowed, and the escalation
+  must keep running until they say it is.
 - question: they are asking something about the medicine
 - symptom: they mention feeling unwell, but it is not an emergency
 - emergency: chest pain, cannot breathe, unconscious, bleeding
 - stop: they want the reminders to end
-- unclear: you genuinely cannot tell
+- unclear: you genuinely cannot tell. Prefer this over "taken" whenever you
+  are unsure - an unnecessary question costs one message, a wrong "taken"
+  writes a dose into a medical record that nobody swallowed and stops anyone
+  being told.
 
 Also extract:
 - medicine: the medicine name they mention, or null

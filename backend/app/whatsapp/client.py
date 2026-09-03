@@ -112,6 +112,14 @@ async def bridge_status() -> dict:
 #: sentence and then silence.
 CONSENT_TEMPLATES = frozenset({"patient_optin"})
 
+#: Addressed to a CARETAKER, who registered their own number on the dashboard.
+#: Consent is not theirs to give or withhold on a patient's behalf, and a
+#: missed-dose alert is the entire product. Gating these on a patient's
+#: consent broke escalation outright the moment one number was both: a
+#: caretaker alert was refused because the same number belonged to a patient
+#: who had not opted in (2026-09-04).
+CARETAKER_TEMPLATES = frozenset({"caretaker_alert"})
+
 
 class NotConsented(WhatsAppError):
     """The recipient has not agreed to receive anything yet (section 4.4)."""
@@ -137,6 +145,22 @@ def may_send(number: str, template: str | None = None) -> tuple[bool, str]:
     if not number:
         return False, "no number"
     if not settings.database_configured:
+        return True, ""
+
+    # A reply is never spam. Every free-text message a patient receives comes
+    # from agent.respond, which only runs because they just wrote to us -
+    # reminders are always templates. So `template is None` IS "we are
+    # answering", and refusing to answer somebody who messaged us is not a
+    # safety measure, it is a broken-looking silence.
+    #
+    # On 2026-09-04 that silence swallowed the confirmation that a STOP had
+    # worked, and then every message after it. The patient asked "Why are you
+    # not answering me?" and got nothing back.
+    if template is None:
+        return True, ""
+
+    # Addressed to a caretaker, who registered their own number.
+    if template in CARETAKER_TEMPLATES:
         return True, ""
 
     try:

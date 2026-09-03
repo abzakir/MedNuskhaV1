@@ -74,13 +74,29 @@ def test_01_the_intro_reaches_someone_who_has_agreed_to_nothing(monkeypatch):
     assert allowed
 
 
-def test_02_but_nothing_else_does(monkeypatch):
+def test_02_but_no_reminder_does(monkeypatch):
     monkeypatch.setattr(wa, "session_scope",
                         _db([Patient("Ammi", "923013494452", opted_in=False)]))
-    for template in ("dose_reminder", "dose_followup", "caretaker_alert", None):
+    for template in ("dose_reminder", "dose_followup"):
         allowed, why = wa.may_send("923013494452", template)
         assert not allowed, f"{template} should have been refused"
         assert "not opted in" in why
+
+
+def test_02b_a_reply_is_never_refused(monkeypatch):
+    """Free text only ever comes from agent.respond, which runs because they
+    just wrote to us. Refusing to answer is not a safety measure."""
+    monkeypatch.setattr(wa, "session_scope",
+                        _db([Patient("Ammi", "923013494452", opted_in=False)]))
+    assert wa.may_send("923013494452", None)[0]
+
+
+def test_02c_a_caretaker_alert_is_not_gated_on_a_patients_consent(monkeypatch):
+    """One number was both a caretaker and an un-opted-in patient, and
+    escalation stopped working entirely (2026-09-04)."""
+    monkeypatch.setattr(wa, "session_scope",
+                        _db([Patient("Affan", "923462648056", opted_in=False)]))
+    assert wa.may_send("923462648056", "caretaker_alert")[0]
 
 
 # ==========================================================================
@@ -95,14 +111,28 @@ def test_03_a_confirmed_patient_gets_everything(monkeypatch):
         assert wa.may_send("923013494452", template)[0]
 
 
-def test_04_stop_outranks_consent(monkeypatch):
-    """A patient who said STOP has withdrawn it - even the intro stays out."""
+def test_04_stop_silences_everything_we_start(monkeypatch):
+    """Including the intro - a STOP is not undone by asking again."""
     monkeypatch.setattr(wa, "session_scope",
                         _db([Patient("Ammi", "923013494452",
                                      opted_in=True, stopped=True)]))
-    for template in ("dose_reminder", "patient_optin", None):
+    for template in ("dose_reminder", "dose_followup", "patient_optin"):
         allowed, why = wa.may_send("923013494452", template)
-        assert not allowed and "STOP" in why
+        assert not allowed and "STOP" in why, template
+
+
+def test_04b_but_a_stopped_patient_is_still_answered(monkeypatch):
+    """The reported failure. He said something read as STOP, and the gate then
+    refused the message confirming the STOP had worked - and every reply
+    after it. He asked "Why are you not answering me?" into silence.
+
+    Somebody who writes to us gets an answer. That is not the same as us
+    starting a conversation they asked to end.
+    """
+    monkeypatch.setattr(wa, "session_scope",
+                        _db([Patient("CR sahab", "923255159422",
+                                     opted_in=True, stopped=True)]))
+    assert wa.may_send("923255159422", None)[0]
 
 
 # ==========================================================================
