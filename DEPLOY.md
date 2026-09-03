@@ -264,6 +264,56 @@ Caddy obtains and renews the certificate on its own.
 
 ---
 
+## Part 1b — make it update itself
+
+Once it is running, you want a push to `main` to reach the server without you
+SSHing in. `.github/workflows/deploy.yml` does that.
+
+**On the server**, give GitHub a key of its own:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/deploy_key -N ""
+cat ~/.ssh/deploy_key.pub >> ~/.ssh/authorized_keys
+cat ~/.ssh/deploy_key            # copy this - the PRIVATE half
+```
+
+**On GitHub**, Settings -> Secrets and variables -> Actions -> New secret:
+
+| Secret | Value |
+|---|---|
+| `DEPLOY_HOST` | the server's IP |
+| `DEPLOY_USER` | `ubuntu` |
+| `DEPLOY_KEY` | the private half you just printed |
+| `DEPLOY_PATH` | `~/MedNuskhaV1` (optional) |
+
+Then delete the private key from the server: `rm ~/.ssh/deploy_key`.
+
+Every push to `main` now runs the unit tests, and only if they pass, SSHes in
+and runs `scripts/deploy.sh`.
+
+### What it will and will not restart
+
+**A commit that only touches the backend does not restart the bridge.**
+Restarting it drops the WhatsApp socket, and every message a patient sends
+during the reconnect is lost — Baileys is not a queue. So the two images are
+rebuilt independently:
+
+| you changed | rebuilt |
+|---|---|
+| `backend/`, `Dockerfile` | backend only — bridge stays connected |
+| `whatsapp-bridge/` | bridge only |
+| `docker-compose.yml` | both |
+| docs, `frontend/` | nothing |
+
+The script then waits for `/api/health` and **fails the deploy** if the
+database, the bridge or the scheduler lock did not come back. A deploy that
+quietly leaves the API down is worse than one that never ran, because nobody
+looks until a dose is missed.
+
+To force both: `./scripts/deploy.sh --all` on the server.
+
+---
+
 ## Part 2 — the dashboard on Vercel
 
 ```bash
