@@ -1,9 +1,13 @@
 # Deploying MedNuskha
 
-Backend and WhatsApp bridge on **Oracle Cloud Always Free**, dashboard on
-**Vercel**. Written for someone who has not deployed a server before.
+Backend and WhatsApp bridge on **one small VM**, dashboard on **Vercel**.
+Written for someone who has not deployed a server before.
 
-About an hour, most of it waiting. Cost: nothing, permanently.
+Recommended: **Hetzner CX22, ~€4.50/month**. Oracle's Always Free tier runs the
+same stack for nothing and is written up as the alternative — read the note on
+idle reclamation before relying on it.
+
+About an hour, most of it waiting.
 
 ---
 
@@ -12,25 +16,110 @@ About an hour, most of it waiting. Cost: nothing, permanently.
 | Piece | Where | Why |
 |---|---|---|
 | **Dashboard** (Next.js) | Vercel | Static pages and a browser app — exactly what Vercel is for |
-| **Backend** (FastAPI) | Oracle VM | The scheduler ticks every minute forever. A dose due at 08:00 must fire whether or not anyone has the site open — serverless cannot do that. |
-| **WhatsApp bridge** (Node) | the same VM | Holds a live WebSocket to WhatsApp plus 2,000+ session files on disk. No serverless platform anywhere can hold an open socket. |
+| **Backend** (FastAPI) | a small VM | The scheduler ticks every minute forever. A dose due at 08:00 must fire whether or not anyone has the site open — serverless cannot do that. |
+| **WhatsApp bridge** (Node) | the same VM | Holds a live WebSocket to WhatsApp plus 2,186 session files that Baileys rewrites continuously. It needs an always-on process and a real disk; no serverless platform gives it either. |
 | **Database** | Supabase | Already hosted. Nothing to do. |
 
 ### Two things checked in advance
 
-**ARM works.** Oracle's free tier is ARM (Ampere). Every dependency that
-compiles — `ctranslate2`, `av`, `psycopg`, `uharfbuzz` — publishes a Linux
-`aarch64` wheel for Python 3.11, which is what the Dockerfile uses. Nothing
-builds from source.
+**Memory is the sizing constraint, not CPU.** Measured on the running system:
+the backend peaks at ~800 MB with the local Whisper model loaded, the bridge
+at ~150 MB. Anything with 2 GB or more is comfortable; at 1 GB, drop
+`faster-whisper` (see 1.7) — Groq's `whisper-large-v3` is the primary
+transcriber anyway and the local one is only a fallback.
 
-**A small box is enough.** The 605MB local Whisper model is a *fallback*;
-Groq's `whisper-large-v3` is primary. Voice notes work fine without it.
+**ARM works too**, if you take the Oracle path. Every dependency that compiles
+— `ctranslate2`, `av`, `psycopg`, `uharfbuzz` — publishes a Linux `aarch64`
+wheel for Python 3.11, which is what the Dockerfile uses. Nothing builds from
+source. Hetzner's CX22 is x86, where this is not a question at all.
 
 ---
 
-## Part 1 — the Oracle VM
+## Part 1 — the server (Hetzner)
 
-### 1.1 Sign up
+**~€4.50/month, and the recommended path.** A CX22 is 2 vCPU / 4 GB / 40 GB
+NVMe. This system peaks at about 950 MB across both services, so that is a
+quarter of the box — the headroom is what lets the local Whisper fallback and
+PDF generation stay in.
+
+*(Oracle's free tier runs the same setup and is written up below. Everything
+from 1.6 onwards is identical; only the machine differs.)*
+
+### 1.1 Create the server
+
+<https://console.hetzner.cloud> → New project → **Add server**
+
+- **Location**: Nuremberg or Helsinki (or Ashburn if most traffic is US-side).
+  Latency to Pakistan is a wash; pick anything.
+- **Image**: **Ubuntu 24.04**
+- **Type**: **Shared vCPU → x86 → CX22**
+- **SSH key**: paste your public key. On Windows, `cat ~/.ssh/id_ed25519.pub`
+  in Git Bash — or `ssh-keygen -t ed25519` first if you have none.
+- **Name**: `mednuskha`
+- **Create & Buy now**
+
+Note the **IPv4 address**. There is no capacity lottery and no idle-reclaim
+policy here — the box is yours until you delete it.
+
+### 1.2 Point the domain at it
+
+At your registrar, add an **A record**: host `api`, value the IPv4 address.
+
+Do this **now**, before 1.7 — Caddy proves ownership over HTTP to get a
+certificate, and it cannot do that until the name resolves.
+
+### 1.3 Firewall
+
+Hetzner's Ubuntu image opens everything by default, so this is the only
+firewall and it is on the box:
+
+```bash
+ssh root@YOUR_IP
+ufw allow OpenSSH && ufw allow 80 && ufw allow 443 && ufw --force enable
+```
+
+**Do not open 8000 or 3001.** Both bind loopback and TLS terminates at Caddy,
+so nothing outside needs them. The bridge in particular will send a WhatsApp
+message to anyone who reaches it.
+
+### 1.4 A user, and automatic security patches
+
+Running the stack as root is a habit worth not forming:
+
+```bash
+adduser --disabled-password --gecos "" mednuskha
+usermod -aG sudo mednuskha
+rsync --archive --chown=mednuskha:mednuskha ~/.ssh /home/mednuskha
+apt update && apt install -y unattended-upgrades && dpkg-reconfigure -plow unattended-upgrades
+```
+
+`unattended-upgrades` is the answer to "but then I have to patch the OS" — it
+applies security updates on its own.
+
+### 1.5 Docker
+
+```bash
+curl -fsSL https://get.docker.com | sh
+usermod -aG docker mednuskha
+exit
+```
+
+Log back in as the new user and check:
+
+```bash
+ssh mednuskha@YOUR_IP
+docker ps
+```
+
+From here **skip to Part 1b** — getting the code, the `.env`, the WhatsApp
+session, starting it and putting Caddy in front are the same wherever the box
+came from.
+
+---
+
+## Part 1 alternative — the Oracle VM (free)
+
+### A.1 Sign up
 
 <https://cloud.oracle.com> → Start for free.
 
@@ -42,7 +131,7 @@ resources keep running.
 Pick a **home region** close to you — Singapore or Mumbai from Pakistan. This
 cannot be changed later.
 
-### 1.2 Create the instance
+### A.2 Create the instance
 
 Menu → **Compute → Instances → Create instance**.
 
@@ -62,7 +151,7 @@ Menu → **Compute → Instances → Create instance**.
 
 Note the **Public IP address** when it finishes provisioning.
 
-### 1.3 Open the firewall — BOTH of them
+### A.3 Open the firewall — BOTH of them
 
 This is where most Oracle deploys stall. There are **two** firewalls and
 opening only one leaves you staring at a connection that never completes.
@@ -89,7 +178,7 @@ sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
 sudo netfilter-persistent save
 ```
 
-### 1.4 Connect
+### A.4 Connect
 
 ```bash
 chmod 600 ssh-key-*.key
@@ -98,7 +187,7 @@ ssh -i ssh-key-*.key ubuntu@YOUR_PUBLIC_IP
 
 On Windows, run this from Git Bash. The username is `ubuntu`, not `root`.
 
-### 1.5 Install Docker
+### A.5 Install Docker
 
 ```bash
 curl -fsSL https://get.docker.com | sudo sh
@@ -112,6 +201,15 @@ Log back in for the group change to apply, then check:
 ssh -i ssh-key-*.key ubuntu@YOUR_PUBLIC_IP
 docker ps
 ```
+
+Then continue at **Part 1b**.
+
+---
+
+## Part 1b — the stack (either server)
+
+Everything from here is the same whether the box came from Hetzner or
+Oracle. `YOUR_USER` is `mednuskha` on Hetzner, `ubuntu` on Oracle.
 
 ### 1.6 Get the code
 
@@ -133,7 +231,8 @@ as the password, not your account password.
 Copy your `.env` up **from your laptop**, in a second terminal:
 
 ```bash
-scp -i ssh-key-*.key path/to/MedNuskha/.env ubuntu@YOUR_IP:~/MedNuskhaV1/.env
+# Hetzner: mednuskha@YOUR_IP  ·  Oracle: -i ssh-key-*.key ubuntu@YOUR_IP
+scp path/to/MedNuskha/.env YOUR_USER@YOUR_IP:~/MedNuskhaV1/.env
 ```
 
 Back on the server, change three values:
@@ -185,7 +284,7 @@ From your laptop:
 ```bash
 cd path/to/MedNuskha/whatsapp-bridge      # wherever you cloned it
 tar czf auth.tgz auth_info
-scp -i ~/ssh-key-*.key auth.tgz ubuntu@YOUR_IP:~/
+scp auth.tgz YOUR_USER@YOUR_IP:~/
 ```
 
 On the server:
@@ -227,7 +326,7 @@ below.
 
 If WhatsApp says `qr`, the session did not copy — redo 1.8.
 
-### 1.10 HTTPS
+### 1.10 HTTPS *(both paths)*
 
 You need it. Supabase will not redirect OAuth to a plain-HTTP origin, and a
 secure Vercel page cannot call an insecure API — the browser blocks it.
@@ -264,7 +363,7 @@ Caddy obtains and renews the certificate on its own.
 
 ---
 
-## Part 1b — make it update itself
+## Part 1c — make it update itself
 
 Once it is running, you want a push to `main` to reach the server without you
 SSHing in. `.github/workflows/deploy.yml` does that.
