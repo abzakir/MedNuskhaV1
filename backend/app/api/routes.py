@@ -1271,14 +1271,36 @@ def remove_medicine(medicine_id: str, permanent: bool = Query(False),
 async def send_optin(patient_id: str,
                      caretaker: Caretaker = Depends(current_caretaker),
                      session: Session = Depends(get_session)) -> dict:
-    """Send the opt-in message so the patient knows what is about to arrive."""
+    """Send the opt-in message, and wait for the answer before sending anything else.
+
+    Sending this IS the act of asking for consent, so it puts the patient into
+    "asked, not yet answered" - which is what `opted_in` is for, and what the
+    message itself promises: "reply HAAN to begin".
+
+    Without this the flag was already true (a patient added on the dashboard
+    starts opted in, because a caretaker vouching for them is enough), the
+    opt-in gate in agent.respond never fired, and the HAAN came back through
+    the ordinary reply path. Observed on a real phone 2026-09-03: a patient
+    answered the intro and was told "Thank you CR sahab ji. zahr 200kg taken -
+    it's noted." A dose was recorded as swallowed because somebody said hello.
+
+    A caretaker who never sends this keeps the old behaviour and reminders
+    start immediately - not asking is a decision they are allowed to make.
+    """
     patient = _owned_patient(patient_id, caretaker, session)
     from app.whatsapp import client as wa
 
     message_id = await wa.send_template(
         to=patient.whatsapp_number, template="patient_optin",
         lang=patient.language, body_vars=[patient.name, caretaker.name])
-    return {"sent": True, "message_id": message_id}
+
+    patient.opted_in = False
+    patient.opted_in_at = None
+    session.add(patient)
+    session.commit()
+    log.info("asked patient %s to opt in - nothing else is sent until they answer",
+             patient_id)
+    return {"sent": True, "message_id": message_id, "awaiting_reply": True}
 
 
 @router.post("/patients/{patient_id}/resume")

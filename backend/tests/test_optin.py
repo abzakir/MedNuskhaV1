@@ -123,7 +123,9 @@ def test_03_haan_opts_the_patient_in(routed):
     assert calls["opted_in"] is True
     assert calls["materialised"] is True, \
         "their doses were never materialised while opted out - they need creating now"
-    assert any("shukriya" in body.lower() for body in calls["sent"])
+    # Asserted on meaning, not on one word of the copy - this used to check
+    # for "shukriya" and broke the moment the greeting was reworded.
+    assert any("mednuskha" in body.lower() for body in calls["sent"]),         "the first thing a patient hears back should say who we are"
 
 
 def test_04_anything_else_re_asks_rather_than_guessing(routed):
@@ -175,3 +177,61 @@ def test_08_the_unit_suite_never_reaches_the_database(monkeypatch):
 
     monkeypatch.setattr(r, "session_scope", no_database)
     assert r._all_medicine_names() == []
+
+
+# ==========================================================================
+# asking for consent has to actually wait for it
+# ==========================================================================
+
+
+def test_09_sending_the_intro_puts_them_back_to_awaiting(monkeypatch):
+    """The gate is useless if nothing ever opens it.
+
+    A patient added on the dashboard starts opted_in=True, so the gate in
+    respond() never fired and the HAAN came back through the ordinary reply
+    path. Observed on a real phone 2026-09-03: a patient answered the intro
+    and was told "Thank you CR sahab ji. zahr 200kg taken - it's noted."
+    A dose was recorded as swallowed because somebody said hello.
+    """
+    import asyncio
+
+    from app.api import routes
+
+    class P:
+        id = "p1"; name = "CR sahab"; whatsapp_number = "923255159422"
+        language = "ur"; opted_in = True
+        opted_in_at = "some-earlier-time"; family_id = "f1"
+
+    class C:
+        id = "c1"; name = "Affan"; family_id = "f1"
+
+    class S:
+        def __init__(self): self.committed = False
+        def add(self, _o): pass
+        def commit(self): self.committed = True
+
+    patient, session = P(), S()
+    monkeypatch.setattr(routes, "_owned_patient", lambda *a, **k: patient)
+
+    async def fake_template(**_k):
+        return "stub-id"
+
+    import app.whatsapp.client as wa
+    monkeypatch.setattr(wa, "send_template", fake_template)
+
+    out = asyncio.run(routes.send_optin("p1", C(), session))
+
+    assert out["sent"] and out["awaiting_reply"] is True
+    assert patient.opted_in is False, "asking for consent must wait for it"
+    assert patient.opted_in_at is None
+    assert session.committed
+
+
+def test_10_and_then_haan_lands_on_the_welcome(routed):
+    """The other half, joined up: awaiting -> HAAN -> welcome, not a dose ack."""
+    calls = routed(_intent("taken", "HAAN"), FakePatient(opted_in=False))
+    assert calls["opted_in"] is True
+    body = " ".join(calls["sent"]).lower()
+    assert "mednuskha" in body, "the first thing they hear back should say who we are"
+    assert "taken - it's noted" not in body
+    assert "le li" not in body, "a greeting is not a dose confirmation"

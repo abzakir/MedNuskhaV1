@@ -190,11 +190,14 @@ STRINGS: dict[str, dict[str, str]] = {
         "en": ("Assalam-o-alaikum {name} ji. {caretaker} has set up medicine "
                "reminders for you. Reply \"HAAN\" to begin."),
     },
+    #: The answer to `patient_optin`. It is the first thing the patient ever
+    #: hears back from us, so it says who we are - "shukriya, noted" reads
+    #: like a reply to something they did not send.
     "optin_confirmed": {
-        "ur": ("Bohot shukriya {name} ji. Ab se hum aap ko har dawai ke waqt yaad "
-               "dila denge."),
-        "en": ("Thank you {name} ji. From now on we'll remind you at each "
-               "medicine time."),
+        "ur": ("Khush aamdeed {name} ji. MedNuskha mein aap ka istiqbal hai. "
+               "Ab se hum aap ko har dawai ke waqt yaad dila denge."),
+        "en": ("Welcome to MedNuskha, {name} ji. From now on we'll remind you "
+               "at each medicine time."),
     },
     "stopped": {
         "ur": ("Theek hai {name} ji, ab yaad-dahani band kar di hai. "
