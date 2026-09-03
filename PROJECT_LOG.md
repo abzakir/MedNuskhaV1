@@ -7,126 +7,93 @@
 
 ## Current state
 
-**The product works end to end on real infrastructure.** A caretaker signs up
-on the website, adds a family member and their medicines, and the patient gets
-WhatsApp reminders at every dose. Replies in Urdu, Roman Urdu or English —
+**Live, in production, reachable from the internet.** A caretaker signs up at
+the Vercel dashboard, adds a family member and their medicines, and the patient
+gets WhatsApp reminders at every dose. Replies in Urdu, Roman Urdu or English —
 typed or spoken — are understood and drive the dose state. Silence escalates to
-the caretaker. Proven on a real phone, not in theory.
+the caretaker. Proven on real phones, by people who were not looking for the
+happy path.
 
-### What is running
+### Where it runs
 
-Four processes. `.\dev.ps1` starts all of them.
-
-| Process | Port | What it is |
+| Piece | Where | Notes |
 |---|---|---|
-| **Dashboard** | 3000 | Next.js 14, the caretaker's website |
-| **Backend** | 8000 | FastAPI — API, scheduler, agent, webhook |
-| **WhatsApp bridge** | 3001 | Node + Baileys, owns the WhatsApp socket |
-| Supabase | — | Postgres 17, 11 tables, hosted |
+| **Dashboard** | Vercel | `mednuskha.vercel.app`, auto-deploys from `main` |
+| **Backend** | Hetzner CX23, Falkenstein | `https://api.mednuskha.site`, Caddy + Let's Encrypt |
+| **WhatsApp bridge** | same box | Baileys, paired as `923200268481`, session in the `mednuskha_whatsapp-auth` volume |
+| **Database** | Supabase **eu-central-1** | Frankfurt, ~9 ms from the server. Was Seoul; see Session 12 |
 
-`GET /api/health` reports the state of all of it in one call: database,
-scheduler, WhatsApp connection and how many AI keys are alive.
+`ssh mednuskha@2.28.47.28`, code in `~/MedNuskhaV1`, `docker compose ps`.
 
-### Built and verified
+**A push to `main` deploys itself**: GitHub Actions runs the unit tests, then
+SSHes in and runs `scripts/deploy.sh`, which rebuilds only what changed and
+fails the deploy if `/api/health` comes back degraded.
 
-| Phase | What | Status |
-|---|---|---|
-| 0 | Repo, schema, config | done |
-| 1 | WhatsApp transport | done — real messages on a real phone |
-| 2 | Dose loop: remind, follow up, escalate | done — 42/42 |
-| 3 | Agent: understand replies, guardrails | done — 38/38 + 57 unit tests |
-| 4 | Website: sign-up, patients, medicines | done — 42/42 |
-| — | Caretaker commands over WhatsApp | done — 11/11 (added at team request) |
-| 5 | Voice notes attached to reminders | done - 32/32 + 25 unit tests |
-| 6 | The two PDF reports | done — 58/58 + 20/20 over HTTP + 25 unit tests |
-| 7 | Prescription OCR (stretch) | not built |
-| 8 | Deploy: Dockerfiles, README, seed | prepared - the deploy itself is the team's |
+### Reading /api/health
 
-Voice now works in both directions. An inbound voice note is transcribed and
-acted on; every reminder carries a pre-generated Urdu voice note, and a patient
-who replies by voice is answered by voice.
+`scheduler: running` only means the timer is ticking. **`scheduler_lock: held`
+means this is the process that actually sends.** When nothing is arriving, that
+is the field to read — and the usual cause is a backend still running on
+somebody's laptop against the same Supabase project.
 
-**Every core phase is built.** Phase 8's buildable half is done too — images,
-compose file, README and `make seed`. What remains is the deploy itself, which
-§14 assigns to the team, and the OCR stretch (Phase 7).
+### The safety rules that are load-bearing
 
-### Test inventory
+Learned the hard way, all of them from a real phone:
 
-```
-pytest backend/tests/                    107 unit tests, no services needed
-scripts/verify/                          ~310 integration checks, live services
-```
-
-`scripts/verify/README.md` says what each one proves and how to run it.
-
-### Known gaps
-
-- **`SUPABASE_SERVICE_KEY` is not set**, so nothing is archived to Supabase
-  Storage. Neither feature is broken by it — a report is rebuilt from the
-  database on each open, and voice notes live on local disk — but **voice
-  notes are then regenerated after every deploy**, and on a fresh ECS box the
-  first reminder of each medicine goes out as text until pre-generation
-  catches up. Worth setting before Phase 8. See `.env.example`.
-- **A spoken reply is not given for a medicine question**, which is the third
-  bullet of Phase 5's "Done when". Measured, not skipped: the confirmed
-  purpose is stored in Roman Urdu ("bukhar aur dard ke liye") and the Urdu
-  voice **drops "bukhar" outright**. A voice note that omits what a medicine
-  treats is worse than none, so only copy written in Urdu script is ever
-  spoken. The fix is data, not code — a purpose typed in Urdu script would
-  speak correctly today.
-- **Buttons do not exist.** WhatsApp removed them for non-official clients, so
-  reply options are numbered text. Invariant 2's replacement is documented in
-  the decisions log and pinned by `test_state_machine.py`.
-- **Baileys is a release candidate** (7.0.0-rc14). Deliberate: 6.17.16 cannot
-  resolve LID senders, which means it cannot tell who replied.
-- **`DEV_AUTH_BYPASS=true`** in the local `.env`. It must be false in production.
-- **A demo patient is sitting in the database** — "Zubaida Bibi [demo]" on
-  920000000001: three medicines, 14 days of history, two symptoms. It is
-  attached to whichever caretaker signed in most recently. `make seed` rebuilds
-  it and `python scripts/seed_demo.py --purge-only` removes it. The number is
-  in a reserved test range, so nothing reaches a real phone.
-- **Neither Dockerfile has been built.** Docker is not installed on the dev
-  machine. The code uses no 3.12+ syntax or stdlib, so `python:3.11-slim`
-  should be right, but the first `docker compose up --build` is unproven —
-  budget time for it rather than discovering it on demo day.
-
----
+- **Consent, not an allowlist.** Nothing but the intro reaches a patient who
+  has not replied to it (`whatsapp/client.may_send`). `ALLOWED_NUMBERS` is
+  empty and is no longer the guard.
+- **A reply is never gated.** Free text to a patient only ever comes from
+  `agent.respond`, which runs because they messaged us. `template is None`
+  means "we are answering".
+- **Ambiguity is about the medicine, not the dose count.**
+- **A wrong `taken` is the worst record this system can write** — it falsifies
+  the log and switches off the escalation that would have caught it.
+- **A voice note that does not say the medicine is worse than no voice note.**
 
 ## Current phase
 
-**Every phase Claude can do is done.** Phases 5, 6 and the buildable half of 8
-landed across the last two sessions. What remains is either the team's by
-design (provisioning, deploying, pairing) or needs a human's eyes and ears.
+**Shipped and in use.** Every phase Claude can do is done and deployed. The
+work now is whatever real use turns up — Session 12 is entirely that, and it
+found seven bugs in one evening that no test had.
 
 ## Next steps
 
-1. **Listen to a voice note, and click the two report buttons.** These are the
-   only "Done when" items no session has been able to tick. The audio is in
-   `backend/.voice-cache/` (five files for the demo patient), and the dashboard
-   buttons need a Supabase sign-in, which no session will do on anyone's
-   behalf. §14 asks you to judge the voice by ear — the round-trip
-   transcription proves it says the right words, not that it sounds right.
-2. **Send a real reminder to a real phone** and confirm the voice note renders
-   with a play button rather than as a file attachment (invariant 7). Every
-   test so far captured the send instead of transmitting it.
-   `python scripts/seed_demo.py --phone <your number>` sets that up.
-3. **Add `SUPABASE_SERVICE_KEY` to `.env`** (Project Settings → API keys → the
-   `sb_secret_` one). Everything works without it, but nothing survives a
-   redeploy. Do this before deploying, not during.
-4. **Deploy — the part §14 says is yours.** `docker compose up -d --build`
-   brings up the backend and bridge; `vercel --prod` from `frontend/` does the
-   dashboard. The README has the full sequence including the QR pairing and the
-   three settings that must change. Neither image has been built yet.
-5. **Phase 9 — rehearse the demo script** in §15, end to end, on the real
-   phone.
-6. Phase 7 (prescription OCR) is the stretch and should only be attempted if
-   1-5 are finished.
-
----
+1. **CR sahab is `stopped=True`** and Affan is `opted_in=False`. Both are
+   deliberate states from live testing, not bugs. Resume from the dashboard
+   and have Affan reply HAAN if you want them receiving again.
+2. **Rotate the credentials that were pasted into a chat transcript**: the
+   Supabase database password (`MedNuskha_1234`, weak for an
+   internet-facing endpoint), the `sb_secret_` service key, and the GitHub
+   Actions `DEPLOY_KEY`. All three still work; none should stay.
+3. **Point `mednuskha.site` at Vercel.** The domain is bought and `api.` is
+   live; the apex still shows the registrar's parking page. Vercel → Domains,
+   then swap the Namecheap parking CNAME and URL-redirect for `A @ 76.76.21.21`
+   and `CNAME www cname.vercel-dns.com`.
+4. **Phase 7 (prescription OCR)** is the only unbuilt phase and remains the
+   stretch.
+5. **Doses missed because the server was down** still count against adherence.
+   `sent_at IS NULL` means nobody was ever reminded, which is not the patient's
+   failure — worth distinguishing in the reports if this matters for the demo.
 
 ## Environment / setup
 
-### Starting it
+### Running production
+
+```bash
+ssh mednuskha@2.28.47.28
+cd ~/MedNuskhaV1
+docker compose ps                       # both containers, health
+docker compose logs -f backend          # the agent, the scheduler, the sends
+curl localhost:8000/api/health          # read scheduler_lock, not scheduler
+./scripts/deploy.sh                     # what CI runs; --all forces both
+python3 scripts/preflight.py            # the settings that fail quietly
+```
+
+A push to `main` does all of that on its own. `--all` is the only thing that
+restarts the bridge, and restarting the bridge drops the WhatsApp socket.
+
+### Starting it locally
 
 ```powershell
 .\dev.ps1        # everything: bridge, backend, dashboard
@@ -136,6 +103,13 @@ design (provisioning, deploying, pairing) or needs a human's eyes and ears.
 
 `make dev` / `make bridge` / `make test` do the same on Linux, which is what
 runs on the ECS box in Phase 8.
+
+> **Do not run the local backend while the server is live.** It takes the
+> Postgres advisory lock and the server drops to standby, sending nothing.
+> Production recovers on its own within a tick once you stop it, but until
+> then no reminders go out. Same for the bridge: one WhatsApp account pairs to
+> one bridge, and starting a second knocks the first offline. The unit suite
+> is always safe - it touches no services.
 
 ### Signing in
 
@@ -171,9 +145,14 @@ never commit it, never share it.**
 
 ### Git
 
-Remote is `https://github.com/abzakir/MedNuskha`, branch `main`. **Commit and
-push at the end of every phase**, one commit per phase, `feat(scope): ...` per
-§12. Claude is not added as a co-author, at the team's request.
+Remote is **`https://github.com/abzakir/MedNuskhaV1`** (`origin`), branch
+`main`. A second remote named `backup` points at `abzakir/MedNuskha`, an older
+repository that is **not kept up to date** - deploys clone `origin`.
+
+**A push to `main` deploys.** Tests run first and a failing suite stops it, but
+there is no staging: `main` is production. `feat(scope): ...` per §12.
+**Claude is not added as a co-author, at the team's request** - no
+`Co-Authored-By` trailer, whatever the tooling suggests.
 
 ---
 
@@ -375,6 +354,121 @@ push at the end of every phase**, one commit per phase, `feat(scope): ...` per
   `reactionMessage`, `pollUpdateMessage` and `keepInChatMessage`.
 
 ## Decisions log
+
+### 2026-09-03/04 — Session 12 (deployed, and the bugs a real patient found)
+
+**The product is live.** `https://api.mednuskha.site` on a Hetzner CX23 in
+Falkenstein, dashboard on Vercel, database moved to Supabase Frankfurt. Push to
+`main` deploys itself. Everything below was found by running it, mostly by a
+patient replying to it on a real phone.
+
+**Deployment (see DEPLOY.md, now Hetzner-first):**
+
+- Hetzner **CX23, ~$7/mo** was chosen over Render and Oracle on measurement,
+  not taste. The backend peaks at **~800 MB** with the local Whisper model
+  loaded and the bridge at ~150 MB, so Render's 512 MB Starter cannot hold it
+  without dropping the offline transcriber; a working Render config is ~$32.
+  Oracle Always Free runs the same stack for nothing but **reclaims idle
+  instances after ~7 days** on free-tier-only accounts, and this workload
+  measures 0.5% CPU — upgrade the account to Pay As You Go (bill stays $0) or
+  lose the box.
+- **The database was 8,500 km from the server.** Supabase was in
+  `ap-northeast-2` (Seoul), the server in Germany: **285 ms per query, 1,137 ms
+  per fresh connection**, and a page load makes dozens. That, not the code, was
+  why adding a patient took 1–2 minutes. Moved to `eu-central-1`: **9 ms and
+  34 ms — 32× faster.** If the app ever feels slow again, measure the round
+  trip before touching a query.
+- `scripts/preflight.py` (stdlib only, runs on a bare box) checks the settings
+  that fail *quietly*: a report link still pointing at localhost, an empty
+  allowlist, `DEV_AUTH_BYPASS` left on.
+- `scripts/deploy.sh` + `.github/workflows/deploy.yml`: tests must pass, then
+  SSH, then rebuild **only what changed**. A backend-only commit does not
+  restart the bridge — restarting it drops the WhatsApp socket and every
+  message a patient sends during the reconnect is gone, because Baileys is not
+  a queue.
+- The health gate was written inline in the shell **twice and broke twice**,
+  both times on quoting. Both failures looked identical and were the bad kind:
+  the gate crashes, the retry loop burns every attempt, and a *healthy* deploy
+  reports FAILED. It is `scripts/healthgate.py` now — a file has no quoting
+  layer to get wrong.
+
+**Bugs a real patient found, in the order they hurt:**
+
+1. **The reminder announced the wrong hour.** `dose_event` timestamps come back
+   from Postgres **naive**, and `.astimezone()` on a naive datetime assumes the
+   *machine's* timezone rather than UTC. On a PKT laptop that read 04:30 UTC as
+   04:30 PKT and told a patient "4 baj gaye" for a 09:30 dose. **Invisible on a
+   UTC server**, which is why it survived — there the wrong assumption happens
+   to be right. Minutes are spoken now too.
+2. **"HAAN" to the intro was recorded as a dose taken.** The opt-in gate
+   existed and was correct, but nothing opened it: `create_patient` set
+   `opted_in=True`, so the gate never fired and the HAAN went down the ordinary
+   reply path, where it is an unambiguous confirmation. Sending the intro now
+   sets `opted_in=False` — asking for consent waits for it — and
+   `create_patient` no longer defaults it true, which is what §4.4 said all
+   along.
+3. **"Yes, I have taken this" was answered "Sorry, I didn't catch that", three
+   times.** Whisper transcribed it perfectly and the model classified it
+   correctly. `resolve_dose` counted **doses** where it should have counted
+   **medicines**: three doses across two medicines, so everything downstream
+   read "I don't know which" as "I don't know what". Two open doses of one
+   medicine are no longer a question — which alone makes a twice-daily
+   prescription answerable again.
+4. **"I bought a Panadol." → "panadol taken - it's noted."** Buying is not
+   taking. The fast path correctly stayed out; the model read acquisition as
+   consumption. A wrong `taken` is the worst record here — it falsifies the log
+   **and** switches off the escalation that would have caught it, so the
+   mistake hides itself.
+5. **The voice note never said the medicine.** `ur-PK-UzmaNeural` silently
+   drops Latin words it cannot transliterate. Measured: "Panadol 500mg",
+   "Inderal 10mg" and "Amlodipine 5mg" are said correctly; **"polymalt" is
+   dropped entirely** and "polymalt syrup" keeps only "syrup". Checked now by
+   *difference* — synthesise with and without the name, and if the transcripts
+   match it contributed nothing — which needs no transliteration of a drug
+   name, the one thing this product will not guess at.
+6. **Voice notes died from day two of every course.** `voice_note_key` is
+   written once at pre-generation, which can only reach doses that exist then,
+   while materialisation runs 24 h ahead. A null key now resolves through the
+   content hash. A separate top-up job every 10 min repairs a pre-generation
+   that never finished.
+7. **A forwarded voice note was recorded as a dose taken**, and the escalation
+   that would have caught it switched off. The bridge reads WhatsApp's
+   forwarded flag now; nothing that changes the record may come from one.
+
+**Two bugs I introduced and then found the same night:**
+
+- The consent gate refused **the message confirming a STOP had worked**, and
+  every reply after it. The patient asked "Why are you not answering me?" into
+  silence. STOP silences what we *start*; it does not make us ignore somebody
+  who just wrote to us.
+- The same gate refused a **`caretaker_alert`** because that caretaker's number
+  also belonged to an un-opted-in patient. Escalation — the entire product —
+  was off.
+
+**The rule that came out of both:** free text to a patient only ever comes from
+`agent.respond`, which runs *because they messaged us*. Reminders are always
+templates. So `template is None` **is** "we are answering", and it is never
+gated.
+
+**ALLOWED_NUMBERS is no longer the guard.** It was bad in both directions: it
+silently blocked three real patients until someone edited `.env` and restarted
+the bridge, and it would not have caught a typo anyway, because a wrong digit
+is a perfectly valid `patient` row somebody would dutifully add to the list.
+Consent catches what the list could not — *"is this number registered"* allows
+a typo, *"has a human on this handset replied"* does not.
+
+**Before touching this area next:**
+
+- **Never run the local backend while the server is live.** It takes the
+  Postgres advisory lock and the server drops to standby, sending nothing. I
+  did this and production went quiet for two minutes. The failover recovers on
+  its own within a tick, but the lock is the thing to check first when
+  reminders stop: `/api/health` → `scheduler_lock`, not `scheduler`.
+- `scheduler` says the timer is ticking. **`scheduler_lock: held` says this is
+  the process that actually sends.** Those are different, and only the second
+  one matters when nothing is arriving.
+- The unit suite must stay offline. It reached live Supabase for a while and a
+  "pure" test took 4.6 s and failed on network wobble; it is 1.7 s now.
 
 ### 2026-08-26 — Session 11 (the caretaker conversation deadlock)
 

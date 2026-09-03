@@ -121,7 +121,11 @@ screen in 5 minutes is not being built.
    the medicine's purpose, food rule and typical timing via AI, shows it as an
    editable suggestion, and the caretaker confirms or corrects it before it
    goes live — the same human-in-the-loop pattern as prescription OCR (§3.3).
-4. Patient receives an opt-in message on WhatsApp and confirms.
+4. Patient receives an opt-in message on WhatsApp and confirms. **Sending it
+   is the act of asking, so it sets `opted_in = false` and nothing else goes to
+   that number until they answer** — a caretaker who never sends it has vouched
+   for the patient and reminders start immediately, which is a decision they
+   are allowed to make.
 5. Scheduler fires a dose reminder as a WhatsApp **template** with two buttons
    and a pre-generated voice note.
 6. Patient confirms via button, free text (Urdu / Roman Urdu / English), or
@@ -163,6 +167,9 @@ not exist yet, delete it.
    sends only work inside an open 24-hour customer service window.
 2. **The dose event ID travels in the button payload** (`TAKEN:<dose_id>`,
    `LATER:<dose_id>`). Never infer which dose a reply refers to from timing.
+   *WhatsApp withdrew interactive buttons for non-official clients on
+   2026-08-23, so there is usually no payload. The replacement rule is
+   invariant 14 — resolve against pending state, never against the clock.*
 3. **The webhook returns HTTP 200 within 2 seconds, before any processing.**
    Enqueue, then return.
 4. **Every inbound message is deduplicated on Meta's `wa_message_id`** with a
@@ -188,6 +195,29 @@ not exist yet, delete it.
     every report says "patient-reported".
 12. **Every patient-facing string lives in `app/i18n/strings.py`** with `ur` and
     `en` keys. No inline copy in business logic.
+13. **Nothing but the intro reaches a patient who has not opted in, and a reply
+    is never gated.** Consent — not a hand-kept allowlist — is what stops a
+    mistyped digit sending a stranger somebody's medical reminders: a wrong
+    number is a perfectly valid `patient` row, so *"is this registered"* allows
+    it and *"has a human on this handset replied"* does not. The intro must
+    always get through or asking becomes impossible. And free text to a patient
+    only ever comes from `agent.respond`, which runs *because they messaged
+    us*, so `template is None` means "we are answering" and is always allowed —
+    refusing to answer somebody who just wrote to you is not a safety measure.
+    Enforced in `whatsapp/client.may_send`, on every outbound path.
+14. **Which dose a reply means is resolved by MEDICINE, never by dose count.**
+    Two open doses of one medicine are not a question — "I took it" can only
+    mean that one, and the newest is what they were last reminded of. When two
+    *medicines* are open and the reply names neither, ask which and name every
+    option; do not claim not to have understood somebody who was perfectly
+    clear. Counting doses instead of medicines made a twice-daily prescription
+    unanswerable and told a patient "samajh nahi aaya" three times in ninety
+    seconds.
+15. **A wrong `taken` is the worst record this system can write.** It falsifies
+    a medical log *and* switches off the escalation that would have caught it,
+    so the mistake hides itself. Buying, collecting, having, or being about to
+    take are not taking; a forwarded message is not an answer; and when unsure,
+    ask. An unnecessary question costs one message.
 
 ---
 
