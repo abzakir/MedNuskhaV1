@@ -583,6 +583,23 @@ async def _on_unclear(intent, patient, lang, caretakers, primary, known) -> None
 
     doses = await asyncio.to_thread(open_doses_for, patient.id, False)
 
+    # We understood them, we just do not know which medicine. Say THAT, and
+    # name every option, rather than claiming not to have understood and then
+    # asking about one of them at random. A patient who says "yes I have taken
+    # this" and is told "sorry, I didn't catch that" says it again, and it
+    # happens again - three times in ninety seconds, on a real phone.
+    if getattr(intent, "ambiguous", False):
+        from app.agent.interpret import distinct_medicines
+
+        options = distinct_medicines(doses)
+        if len(options) > 1:
+            body = strings.t("which_medicine", lang, name=patient.name,
+                             medicines=" ya ".join(options) if lang == "ur"
+                             else " or ".join(options))
+            await _send_checked(patient, body, intent=intent,
+                                caretakers=caretakers, known_texts=known)
+            return
+
     # Spend the key pool on a better-worded question before settling for the
     # canned one - "samajh nahi aaya" every time reads like a broken machine.
     body = await _clarify_text(intent, lang, doses)

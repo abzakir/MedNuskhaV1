@@ -59,6 +59,9 @@ class Intent:
     text: str | None = None
     #: WhatsApp said the message was forwarded, not composed now.
     forwarded: bool = False
+    #: We understood the intent but not which medicine it was about.
+    #: Distinct from "unclear", which means we did not understand at all.
+    ambiguous: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -70,7 +73,13 @@ class Intent:
 _TAKEN_RE = re.compile(
     r"(^|\b)("
     r"haan|han|ha|jee|ji\s*haan|yes|yep|yeah|ok|okay|theek|thik|done|"
-    r"le\s*li|leli|le\s*liya|lelia|le\s*chuka|le\s*chuki|kha\s*li|khali|"
+    # Spellings observed in the wild, not invented. "Lely Mene" came back
+    # from Whisper and "Layli mainay" was typed, both meaning "le li maine" -
+    # I have taken it. The model scored the second at 0.10 and the patient was
+    # told three times that we did not understand. A patient does not spell
+    # Roman Urdu the way a dictionary would; there is no dictionary.
+    r"le\s*li|leli|lely|lelly|layli|laili|laly|li\s*li|le\s*liya|lelia|"
+    r"le\s*chuka|le\s*chuki|kha\s*li|khali|"
     r"kha\s*liya|pi\s*li|taken|took\s*it|had\s*it|already\s*took"
     r")(\b|$)|"
     r"لے\s*لی|لی\s*ہے|کھا\s*لی|ہاں|جی\s*ہاں|پی\s*لی",
@@ -190,20 +199,49 @@ def _not_an_answer(kind: IntentKind, forwarded: bool) -> bool:
 AWAITING_STATES = ("SENT", "AWAITING_REPLY", "REMINDED_AGAIN")
 
 
+def _newest(doses: list):
+    """The most recently scheduled of these - the one just reminded about."""
+    return max(doses, key=lambda d: getattr(d, "scheduled_at", None) or 0)
+
+
+def _by_medicine(doses: list) -> dict[str, list]:
+    out: dict[str, list] = {}
+    for d in doses:
+        out.setdefault((getattr(d, "medicine_name", "") or "").lower(), []).append(d)
+    return out
+
+
+def distinct_medicines(doses: list) -> list[str]:
+    """The medicine labels a patient could plausibly mean, de-duplicated."""
+    seen, out = set(), []
+    for d in doses:
+        name = (getattr(d, "medicine_name", "") or "").lower()
+        if name and name not in seen:
+            seen.add(name)
+            out.append(getattr(d, "medicine_label", None) or name)
+    return out
+
+
 def resolve_dose(text: str, payload: str | None, open_doses: list
                  ) -> tuple[str | None, bool]:
     """Work out which dose a reply is about.
 
-    Returns (dose_id, ambiguous). `ambiguous` True means the reply genuinely
-    could be about more than one dose, and the caller must ask rather than
-    pick.
+    Returns (dose_id, ambiguous). `ambiguous` True means the reply could be
+    about more than one MEDICINE, and the caller must ask rather than pick.
 
-    A MISSED dose is deliberately NOT treated as competing with one that is
-    still awaiting an answer. Missed doses accumulate - by the second day a
-    patient has several - and counting them made every single reply ambiguous,
-    so the agent answered "samajh nahi aaya" to everything. Observed on a real
-    phone, 2026-08-23. A missed dose only matters when nothing else is open,
-    and then only for a late confirmation.
+    Ambiguity is about the medicine, never the dose count. Two open doses of
+    the same medicine are not a question - "I took it" can only mean that
+    medicine, and the one they were just reminded about is the newest. Counting
+    doses instead of medicines is what made a patient with a twice-daily
+    prescription unanswerable: on 2026-09-03 CR sahab said "Yes, I have taken
+    this", was understood perfectly, and was told "Sorry, I didn't catch that"
+    three times, because three doses were open across two medicines.
+
+    A MISSED dose is deliberately NOT treated as competing with one still
+    awaiting an answer. Missed doses accumulate - by the second day a patient
+    has several - and counting them made every reply ambiguous. A missed dose
+    only matters when nothing else is open, and then only for a late
+    confirmation.
     """
     if payload:
         from app.whatsapp.client import DOSE_PAYLOAD_RE
@@ -222,14 +260,28 @@ def resolve_dose(text: str, payload: str | None, open_doses: list
     if len(candidates) == 1:
         return getattr(candidates[0], "id", None), False
 
-    named = _medicine_in_text(text, candidates)
-    if named:
-        return named, False
+    # Did they name one? Then it is that medicine's newest open dose.
+    named_id = _medicine_in_text(text, candidates)
+    if named_id:
+        named = next((d for d in candidates
+                      if getattr(d, "id", None) == named_id), None)
+        if named is not None:
+            same = _by_medicine(candidates).get(
+                (getattr(named, "medicine_name", "") or "").lower(), [named])
+            return getattr(_newest(same), "id", None), False
+        return named_id, False
 
-    # Several are genuinely waiting. The most recent is the one they were just
-    # reminded about, but we do not assume - we ask.
-    log.info("%d doses awaiting a reply and none named - asking rather than "
-             "guessing", len(candidates))
+    groups = _by_medicine(candidates)
+    if len(groups) == 1:
+        # Several doses, one medicine. Nothing to ask about: they can only
+        # mean that one, and the newest is what they were last reminded of.
+        only = next(iter(groups.values()))
+        log.info("%d doses open but all of one medicine - taking the newest",
+                 len(only))
+        return getattr(_newest(only), "id", None), False
+
+    log.info("%d medicines awaiting a reply and none named - asking which",
+             len(groups))
     return None, True
 
 
@@ -301,9 +353,10 @@ async def interpret(msg, patient, open_doses) -> Intent:
             return Intent(kind="unclear", dose_id=dose_id, reason=text,
                           confidence=0.0, text=text, forwarded=True)
         if ambiguous and kind in ("taken", "later", "not_taken"):
-            # We know WHAT they meant but not WHICH dose. Ask.
+            # We know WHAT they meant but not WHICH medicine. Ask which -
+            # and say so, rather than claiming not to have understood.
             return Intent(kind="unclear", dose_id=None, reason=text,
-                          confidence=0.5, text=text)
+                          confidence=0.5, text=text, ambiguous=True)
         return Intent(kind=kind, dose_id=dose_id, reason=None,
                       confidence=confidence, text=text)
 
@@ -345,6 +398,9 @@ async def interpret(msg, patient, open_doses) -> Intent:
 
     if ambiguous and kind in ("taken", "later", "not_taken"):
         kind, confidence = "unclear", min(confidence, 0.5)
+        return Intent(kind=kind, dose_id=None, reason=reason or text,
+                      confidence=confidence, medicine=medicine, text=text,
+                      forwarded=forwarded, ambiguous=True)
 
     if _not_an_answer(kind, forwarded):
         log.info("forwarded message read as %r - asking instead of recording it", kind)

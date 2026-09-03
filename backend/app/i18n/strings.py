@@ -252,6 +252,14 @@ STRINGS: dict[str, dict[str, str]] = {
         "ur": "Maaf kijiye ga, samajh nahi aaya. Kya aap ne {medicine} le li hai?",
         "en": "Sorry, I didn't catch that. Have you taken {medicine}?",
     },
+    #: We understood them perfectly - we just do not know WHICH medicine.
+    #: Saying "samajh nahi aaya" to somebody who clearly said "yes I have
+    #: taken this" is a lie, and they say it again, and it happens again.
+    #: Observed on a real phone 2026-09-03, three times in ninety seconds.
+    "which_medicine": {
+        "ur": "{name} ji, kaunsi dawai li hai - {medicines}?",
+        "en": "{name} ji, which one have you taken - {medicines}?",
+    },
     "clarify_generic": {
         "ur": "Maaf kijiye ga, samajh nahi aaya. Dobara likh dein?",
         "en": "Sorry, I didn't catch that. Could you say it again?",
