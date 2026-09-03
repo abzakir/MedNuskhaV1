@@ -49,12 +49,16 @@ EXPOSE 8000
 # how many AI keys are alive - so an orchestrator restarting on it is checking
 # something real, not just that the process is up.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-    CMD python -c "import urllib.request,sys; \
-sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).status == 200 else 1)"
+    CMD python -c "import os,urllib.request,sys; \
+port=os.environ.get('PORT','8000'); \
+sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{port}/api/health', timeout=4).status == 200 else 1)"
 
 # One worker on purpose. A Postgres advisory lock already stops a second
 # process running the ticker (PROJECT_LOG.md, Session 3), so extra workers
 # would serve requests but sit idle on the schedule - and the lock failure
 # reads like a bug to whoever finds it next. Scale with more containers behind
 # a load balancer if the API ever needs it.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# ${PORT:-8000} rather than a fixed 8000: every PaaS assigns a port and
+# routes to it, and a container listening somewhere else never passes
+# its health check. Compose sets no PORT, so it stays on 8000 there.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]

@@ -38,13 +38,24 @@ import express from 'express'
 import pino from 'pino'
 import qrcode from 'qrcode-terminal'
 
-const PORT = Number(process.env.BRIDGE_PORT || 3001)
+// PORT is the convention every PaaS uses - Render, Railway, Fly, Heroku all
+// assign one and route external traffic to it. BRIDGE_PORT still wins so a
+// compose or bare-metal deploy is unchanged.
+const PORT = Number(process.env.BRIDGE_PORT || process.env.PORT || 3001)
 // Loopback by default. This process will send a WhatsApp message to anyone who
 // can reach it and has no authentication of its own, so on a bare-metal host
 // binding every interface hands the account to the internet. Docker overrides
 // this to 0.0.0.0 because there the backend reaches it by service name and the
 // published port is already pinned to 127.0.0.1 (see docker-compose.yml).
-const HOST = process.env.BRIDGE_HOST || '127.0.0.1'
+// Loopback by default: this process sends a WhatsApp message to anyone who
+// reaches it and has no authentication of its own, so on a bare host binding
+// every interface hands the account to the internet.
+//
+// A platform that ASSIGNED us a port is going to route traffic to it from
+// outside the container, so loopback there means the health check never
+// passes and the service never goes live. In that case bind everything -
+// the platform, not us, decides who reaches it.
+const HOST = process.env.BRIDGE_HOST || (process.env.PORT ? '0.0.0.0' : '127.0.0.1')
 const BACKEND_WEBHOOK_URL =
   process.env.BACKEND_WEBHOOK_URL || 'http://127.0.0.1:8000/webhook'
 const AUTH_DIR = process.env.AUTH_DIR || './auth_info'
