@@ -73,9 +73,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="mx-auto flex h-16 max-w-5xl items-center gap-5 px-4">
           <Link
             href="/dashboard"
-            className="font-display text-2xl leading-none tracking-tight text-primary transition-opacity hover:opacity-80"
+            className="flex items-center gap-2.5 transition-opacity hover:opacity-85"
           >
-            MedNuskha
+            <img
+              src="/mednuskha-logo.jpg"
+              alt="MedNuskha Logo"
+              className="h-8 w-8 rounded-lg object-cover shadow-sm border border-emerald-500/20"
+            />
+            <span className="font-display text-2xl leading-none tracking-tight text-primary">
+              MedNuskha
+            </span>
           </Link>
 
           <nav className="hidden gap-5 sm:flex">

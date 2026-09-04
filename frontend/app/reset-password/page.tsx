@@ -83,9 +83,11 @@ export default function ResetPasswordPage() {
     <main className="flex min-h-screen items-center justify-center bg-paper p-6">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
-          <h1 className="font-display text-5xl leading-none tracking-tight text-primary">
-            MedNuskha
-          </h1>
+          <img
+            src="/mednuskha-banner.png"
+            alt="MedNuskha Logo Banner"
+            className="mx-auto h-14 w-auto object-contain"
+          />
         </div>
 
         <div className="rounded-xl border bg-card p-6 shadow-lift">

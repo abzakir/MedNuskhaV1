@@ -188,10 +188,12 @@ export default function LoginPage() {
       />
       <div className="relative w-full max-w-sm">
         <div className="mb-8 text-center">
-          <h1 className="font-display text-5xl leading-none tracking-tight text-primary">
-            MedNuskha
-          </h1>
-          <p className="mx-auto mt-3 max-w-[30ch] text-sm leading-relaxed text-muted-foreground">
+          <img
+            src="/mednuskha-banner.png"
+            alt="MedNuskha Logo Banner"
+            className="mx-auto h-16 w-auto object-contain transition-transform hover:scale-105"
+          />
+          <p className="mx-auto mt-4 max-w-[32ch] text-sm leading-relaxed text-muted-foreground">
             Medicine reminders that reach your family on WhatsApp, in Urdu.
             Nothing for them to install, nothing to learn.
           </p>

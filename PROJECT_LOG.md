@@ -355,12 +355,17 @@ there is no staging: `main` is production. `feat(scope): ...` per §12.
 
 ## Decisions log
 
-### 2026-09-04 — Session 13 (Documentation visual branding upgrade)
+### 2026-09-04 — Session 13 (Documentation visual branding upgrade & frontend integration)
 
-**Integrated official MedNuskha logo assets across project documentation.**
+**Integrated official MedNuskha logo assets across project documentation and frontend UI.**
 
 - Added high-resolution horizontal banner (`mednuskha-banner.png`) and mark logo (`mednuskha-logo.jpg`) to `docs/assets/` and `frontend/public/`.
 - Upgraded root `README.md`, `frontend/README.md`, and `scripts/verify/README.md` with centered, modern banner images, styled markdown layout, and rich overview descriptions.
+- Integrated logo assets into Next.js frontend app:
+  - Updated metadata favicon in `app/layout.tsx` to `/mednuskha-logo.jpg`.
+  - Added brand logo mark to dashboard top navigation header in `app/dashboard/layout.tsx`.
+  - Upgraded login and sign-up header in `app/login/page.tsx` with full horizontal banner logo.
+  - Added logo banner to `app/reset-password/page.tsx` and icon logo to dashboard `EmptyState` card.
 
 ### 2026-09-03/04 — Session 12 (deployed, and the bugs a real patient found)
 

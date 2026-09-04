@@ -72,6 +72,11 @@ export default function OverviewPage() {
 function EmptyState() {
   return (
     <div className="rounded-xl border border-dashed bg-card p-12 text-center">
+      <img
+        src="/mednuskha-logo.jpg"
+        alt="MedNuskha Icon"
+        className="mx-auto mb-4 h-16 w-16 rounded-2xl object-cover shadow-md border border-emerald-500/20"
+      />
       <h2 className="font-display text-2xl">Start with one person</h2>
       <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-muted-foreground">
         Add the family member you look after, then their medicines and times.
