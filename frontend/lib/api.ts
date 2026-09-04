@@ -7,6 +7,10 @@
 
 import { getSession } from "./supabase";
 
+// The localhost fallback is for `npm run dev` only. Next.js inlines
+// NEXT_PUBLIC_API_BASE at build time, so on Vercel this whole expression
+// compiles down to the deployed API URL and the fallback becomes dead code -
+// seeing "localhost:8000" in a production bundle does not mean it is in use.
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") ?? "http://localhost:8000";
 
