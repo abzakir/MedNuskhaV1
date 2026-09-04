@@ -355,6 +355,13 @@ there is no staging: `main` is production. `feat(scope): ...` per §12.
 
 ## Decisions log
 
+### 2026-09-04 — Session 13 (Documentation visual branding upgrade)
+
+**Integrated official MedNuskha logo assets across project documentation.**
+
+- Added high-resolution horizontal banner (`mednuskha-banner.png`) and mark logo (`mednuskha-logo.jpg`) to `docs/assets/` and `frontend/public/`.
+- Upgraded root `README.md`, `frontend/README.md`, and `scripts/verify/README.md` with centered, modern banner images, styled markdown layout, and rich overview descriptions.
+
 ### 2026-09-03/04 — Session 12 (deployed, and the bugs a real patient found)
 
 **The product is live.** `https://api.mednuskha.site` on a Hetzner CX23 in

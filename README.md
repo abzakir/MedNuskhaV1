@@ -1,6 +1,8 @@
 <div align="center">
 
-# 💊 MedNuskha
+<img src="docs/assets/mednuskha-banner.png" alt="MedNuskha Banner" width="700" style="border-radius: 12px;" />
+
+<br/><br/>
 
 ### An AI care agent that keeps elderly patients on their medication — entirely over WhatsApp
 

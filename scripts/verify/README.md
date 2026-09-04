@@ -1,4 +1,14 @@
-# Verification scripts
+<div align="center">
+
+<img src="../../docs/assets/mednuskha-logo.jpg" alt="MedNuskha Icon" width="100" style="border-radius: 16px;" />
+
+# 🧪 MedNuskha Verification Scripts
+
+### End-to-end integration test suite & live diagnostic tools
+
+</div>
+
+---
 
 Integration checks that run against the **live** Supabase database, the **live**
 Groq keys and the **live** WhatsApp bridge. They are not unit tests — they are
