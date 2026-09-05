@@ -581,7 +581,14 @@ async def _on_unclear(intent, patient, lang, caretakers, primary, known) -> None
                                 patient=patient, words=intent.text or "")
         return
 
-    doses = await asyncio.to_thread(open_doses_for, patient.id, False)
+    # The SAME view of "open" that interpret was given. It used to exclude
+    # MISSED here, and interpret includes them - so once a dose had escalated,
+    # interpret could see two missed medicines, call the reply ambiguous, and
+    # hand over to a branch that then saw no doses at all and could not name
+    # what it was asking about. A patient answering "le li hai" by voice and
+    # then by text got "samajh nahi aaya" every time, because nothing changed
+    # between attempts. Observed on a real phone 2026-09-05.
+    doses = await asyncio.to_thread(open_doses_for, patient.id)
 
     # We understood them, we just do not know which medicine. Say THAT, and
     # name every option, rather than claiming not to have understood and then

@@ -353,6 +353,20 @@ there is no staging: `main` is production. `feat(scope): ...` per §12.
   `protocolMessage`, `senderKeyDistributionMessage`, `messageContextInfo`,
   `reactionMessage`, `pollUpdateMessage` and `keepInChatMessage`.
 
+- **Both halves of a reply must agree on which doses are open.** `interpret`
+  is handed `open_doses_for(patient_id)` with MISSED included, because a late
+  confirmation still has to land (§4.8). `_on_unclear` re-fetched the same
+  patient with `include_missed=False`. Once a dose had escalated, interpret
+  saw two missed medicines, called the reply ambiguous, and handed over to a
+  branch that saw **no doses at all** - so the "which one have you taken?"
+  question, which needs more than one option to fire, got zero and fell
+  through to the generic line. Maani ji answered "le li hai" three times by
+  voice and once in text on 2026-09-05 and got "samajh nahi aaya" every time,
+  because nothing changed between attempts. Pinned by
+  `test_missed_still_answerable.py`. This is the 2026-09-03 failure returning
+  through a different door: that one counted doses instead of medicines, this
+  one filtered away the medicines it was about to ask about.
+
 ## Decisions log
 
 ### 2026-09-04 — Session 13 (Documentation visual branding upgrade & frontend integration)
