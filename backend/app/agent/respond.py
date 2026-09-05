@@ -371,8 +371,33 @@ async def _on_emergency(intent, patient, lang, caretakers, primary, known) -> No
     await asyncio.to_thread(_record_symptom, patient.id, intent, "emergency", True)
 
 
+async def _nothing_pending(intent, patient, lang, caretakers, known) -> bool:
+    """Answer honestly when they spoke about a dose and there is none.
+
+    Understanding somebody and having nothing to record are different things,
+    and "samajh nahi aaya" says the first when only the second is true. A
+    patient whose course has finished can then say "mene dawai kha li hai" in
+    Urdu, in English, by voice and by text, and be told every single time that
+    she was not understood - there is no sentence she could have sent that
+    would have worked. Observed on a real phone 2026-09-06, after a one-day
+    Panadol course had already completed.
+
+    Returns True when it has answered and the caller should stop.
+    """
+    if await asyncio.to_thread(open_doses_for, patient.id):
+        return False
+    log.info("dose answer with nothing open for patient %s - saying so",
+             patient.id)
+    body = strings.t("no_dose_pending", lang, name=patient.name)
+    await _send_checked(patient, body, intent=intent, caretakers=caretakers,
+                        known_texts=known)
+    return True
+
+
 async def _on_taken(intent, patient, lang, caretakers, primary, known) -> None:
     if not intent.dose_id:
+        if await _nothing_pending(intent, patient, lang, caretakers, known):
+            return
         await _on_unclear(intent, patient, lang, caretakers, primary, known)
         return
 
@@ -397,6 +422,12 @@ async def _on_later(intent, patient, lang, caretakers, primary, known) -> None:
     if intent.dose_id:
         await asyncio.to_thread(_record_reason, intent.dose_id,
                                 intent.text or "abhi nahi")
+    elif await _nothing_pending(intent, patient, lang, caretakers, known):
+        # Promising to remind her again when the course is over and reminders
+        # are stopped is a plain untruth, and it is what made the next four
+        # replies look like a comprehension failure rather than an empty
+        # schedule.
+        return
     body = strings.t("dose_later_ack", lang, name=patient.name)
     await _send_checked(patient, body, intent=intent, caretakers=caretakers,
                         known_texts=known)
@@ -407,6 +438,8 @@ async def _on_not_taken(intent, patient, lang, caretakers, primary, known) -> No
     if intent.dose_id:
         await asyncio.to_thread(sm.mark_skipped, intent.dose_id,
                                 intent.reason or intent.text, _source(intent))
+    elif await _nothing_pending(intent, patient, lang, caretakers, known):
+        return
     body = strings.t("dose_later_ack", lang, name=patient.name)
     await _send_checked(patient, body, intent=intent, caretakers=caretakers,
                         known_texts=known)

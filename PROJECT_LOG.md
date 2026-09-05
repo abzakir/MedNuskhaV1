@@ -367,6 +367,20 @@ there is no staging: `main` is production. `feat(scope): ...` per §12.
   through a different door: that one counted doses instead of medicines, this
   one filtered away the medicines it was about to ask about.
 
+- **"I understood you" and "I have something to record" are different, and
+  only one of them is `samajh nahi aaya`.** Maani ji's Panadol was a *one-day*
+  course. It completed, her reminders were stopped, and the dashboard read
+  "No doses due today" - so when she said "mene dawai kha li hai" three times
+  by voice and then "I have taken the medicine" in English, there was no dose
+  anywhere for the answer to land on. Every reply told her she had not been
+  understood. She had been understood perfectly; **there was no sentence she
+  could have sent that would have worked**, which is why she kept rephrasing.
+  A dose answer with nothing open now says so plainly (`no_dose_pending`), and
+  `_on_later` no longer promises "thori der mein dobara yaad dila denge" on a
+  finished course with reminders stopped. Pinned by `test_nothing_pending.py`.
+  Worth remembering when testing: a completed course looks identical to a
+  broken agent from the patient's side.
+
 ## Decisions log
 
 ### 2026-09-04 — Session 13 (Documentation visual branding upgrade & frontend integration)

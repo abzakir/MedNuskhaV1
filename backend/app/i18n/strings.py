@@ -57,6 +57,21 @@ STRINGS: dict[str, dict[str, str]] = {
         "ur": "Theek hai {name} ji. Thori der mein dobara yaad dila denge.",
         "en": "That's alright {name} ji. We'll remind you again shortly.",
     },
+    #: They answered about a dose, clearly, and there was no dose to answer -
+    #: the course had finished, or nothing was due. Saying "samajh nahi aaya"
+    #: here is a lie: we understood every word, we simply had nothing to write
+    #: down. Maani ji said she had taken her medicine three times by voice and
+    #: once in English on 2026-09-06, after her one-day Panadol course was
+    #: already complete, and was told each time that we had not understood
+    #: her. Nothing she could have said would have worked.
+    "no_dose_pending": {
+        "ur": ("Shukriya {name} ji. Is waqt aap ki koi dawai baaki nahi thi, "
+               "is liye main ne kuch likha nahi. Agli yaad-dahani par zaroor "
+               "bata dijiye ga."),
+        "en": ("Thank you {name} ji. Nothing was pending just now, so there "
+               "was nothing for me to record. Do tell me at the next "
+               "reminder."),
+    },
 
     # Button labels. Max 25 characters (Green API limit).
     "btn_taken": {"ur": "Le li", "en": "Taken"},
