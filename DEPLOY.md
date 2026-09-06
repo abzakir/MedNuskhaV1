@@ -244,7 +244,7 @@ nano .env
 ```
 DEV_AUTH_BYPASS=false
 NEXT_PUBLIC_API_BASE=https://api.yourdomain.com
-ALLOWED_NUMBERS=923200268481,923255159422
+ALLOWED_NUMBERS=923001234567,923001234568
 ```
 
 - **`DEV_AUTH_BYPASS=false`** is the one that matters. Left `true`, every

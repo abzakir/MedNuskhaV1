@@ -198,7 +198,7 @@ def test_09_sending_the_intro_puts_them_back_to_awaiting(monkeypatch):
     from app.api import routes
 
     class P:
-        id = "p1"; name = "CR sahab"; whatsapp_number = "923255159422"
+        id = "p1"; name = "CR sahab"; whatsapp_number = "923001234568"
         language = "ur"; opted_in = True
         opted_in_at = "some-earlier-time"; family_id = "f1"
 

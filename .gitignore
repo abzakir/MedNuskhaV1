@@ -34,8 +34,6 @@ frontend/.env*.local
 .whisper-cache/
 *.ogg
 *.pdf
-!MedNuskha_PRD_v1.0.pdf
-!MedNuskha_Setup_Guide.pdf
 
 # os / editors
 .DS_Store

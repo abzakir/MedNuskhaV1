@@ -69,16 +69,16 @@ def test_01_the_intro_reaches_someone_who_has_agreed_to_nothing(monkeypatch):
     """Otherwise it deadlocks - they can never reply HAAN to a message we
     refused to send."""
     monkeypatch.setattr(wa, "session_scope",
-                        _db([Patient("Ammi", "923013494452", opted_in=False)]))
-    allowed, _ = wa.may_send("923013494452", "patient_optin")
+                        _db([Patient("Ammi", "923001234567", opted_in=False)]))
+    allowed, _ = wa.may_send("923001234567", "patient_optin")
     assert allowed
 
 
 def test_02_but_no_reminder_does(monkeypatch):
     monkeypatch.setattr(wa, "session_scope",
-                        _db([Patient("Ammi", "923013494452", opted_in=False)]))
+                        _db([Patient("Ammi", "923001234567", opted_in=False)]))
     for template in ("dose_reminder", "dose_followup"):
-        allowed, why = wa.may_send("923013494452", template)
+        allowed, why = wa.may_send("923001234567", template)
         assert not allowed, f"{template} should have been refused"
         assert "not opted in" in why
 
@@ -87,16 +87,16 @@ def test_02b_a_reply_is_never_refused(monkeypatch):
     """Free text only ever comes from agent.respond, which runs because they
     just wrote to us. Refusing to answer is not a safety measure."""
     monkeypatch.setattr(wa, "session_scope",
-                        _db([Patient("Ammi", "923013494452", opted_in=False)]))
-    assert wa.may_send("923013494452", None)[0]
+                        _db([Patient("Ammi", "923001234567", opted_in=False)]))
+    assert wa.may_send("923001234567", None)[0]
 
 
 def test_02c_a_caretaker_alert_is_not_gated_on_a_patients_consent(monkeypatch):
     """One number was both a caretaker and an un-opted-in patient, and
     escalation stopped working entirely (2026-09-04)."""
     monkeypatch.setattr(wa, "session_scope",
-                        _db([Patient("Affan", "923462648056", opted_in=False)]))
-    assert wa.may_send("923462648056", "caretaker_alert")[0]
+                        _db([Patient("Affan", "923001234568", opted_in=False)]))
+    assert wa.may_send("923001234568", "caretaker_alert")[0]
 
 
 # ==========================================================================
@@ -106,18 +106,18 @@ def test_02c_a_caretaker_alert_is_not_gated_on_a_patients_consent(monkeypatch):
 
 def test_03_a_confirmed_patient_gets_everything(monkeypatch):
     monkeypatch.setattr(wa, "session_scope",
-                        _db([Patient("Ammi", "923013494452", opted_in=True)]))
+                        _db([Patient("Ammi", "923001234567", opted_in=True)]))
     for template in ("dose_reminder", "dose_followup", None):
-        assert wa.may_send("923013494452", template)[0]
+        assert wa.may_send("923001234567", template)[0]
 
 
 def test_04_stop_silences_everything_we_start(monkeypatch):
     """Including the intro - a STOP is not undone by asking again."""
     monkeypatch.setattr(wa, "session_scope",
-                        _db([Patient("Ammi", "923013494452",
+                        _db([Patient("Ammi", "923001234567",
                                      opted_in=True, stopped=True)]))
     for template in ("dose_reminder", "dose_followup", "patient_optin"):
-        allowed, why = wa.may_send("923013494452", template)
+        allowed, why = wa.may_send("923001234567", template)
         assert not allowed and "STOP" in why, template
 
 
@@ -130,9 +130,9 @@ def test_04b_but_a_stopped_patient_is_still_answered(monkeypatch):
     starting a conversation they asked to end.
     """
     monkeypatch.setattr(wa, "session_scope",
-                        _db([Patient("CR sahab", "923255159422",
+                        _db([Patient("CR sahab", "923001234568",
                                      opted_in=True, stopped=True)]))
-    assert wa.may_send("923255159422", None)[0]
+    assert wa.may_send("923001234568", None)[0]
 
 
 # ==========================================================================
@@ -153,7 +153,7 @@ def test_06_a_broken_check_does_not_silence_the_system(monkeypatch):
         raise RuntimeError("database unreachable")
 
     monkeypatch.setattr(wa, "session_scope", explode)
-    assert wa.may_send("923013494452", "dose_reminder")[0]
+    assert wa.may_send("923001234567", "dose_reminder")[0]
 
 
 def test_07_an_empty_number_is_never_sent_to(monkeypatch):

@@ -41,7 +41,7 @@ class Patient:
     id = "p1"
     name = "Maani"
     language = "ur"
-    whatsapp_number = "923200268481"
+    whatsapp_number = "923001234567"
 
 
 class Dose:

@@ -20,10 +20,10 @@ happy path.
 |---|---|---|
 | **Dashboard** | Vercel | `mednuskha.vercel.app`, auto-deploys from `main` |
 | **Backend** | Hetzner CX23, Falkenstein | `https://api.mednuskha.site`, Caddy + Let's Encrypt |
-| **WhatsApp bridge** | same box | Baileys, paired as `923200268481`, session in the `mednuskha_whatsapp-auth` volume |
+| **WhatsApp bridge** | same box | Baileys, paired as `923001234567`, session in the `mednuskha_whatsapp-auth` volume |
 | **Database** | Supabase **eu-central-1** | Frankfurt, ~9 ms from the server. Was Seoul; see Session 12 |
 
-`ssh mednuskha@2.28.47.28`, code in `~/MedNuskhaV1`, `docker compose ps`.
+`ssh mednuskha@<server-ip>`, code in `~/MedNuskhaV1`, `docker compose ps`.
 
 **A push to `main` deploys itself**: GitHub Actions runs the unit tests, then
 SSHes in and runs `scripts/deploy.sh`, which rebuilds only what changed and
@@ -63,7 +63,7 @@ found seven bugs in one evening that no test had.
    deliberate states from live testing, not bugs. Resume from the dashboard
    and have Affan reply HAAN if you want them receiving again.
 2. **Rotate the credentials that were pasted into a chat transcript**: the
-   Supabase database password (`MedNuskha_1234`, weak for an
+   Supabase database password (rotated 2026-09-06; the old one was weak for an
    internet-facing endpoint), the `sb_secret_` service key, and the GitHub
    Actions `DEPLOY_KEY`. All three still work; none should stay.
 3. **Point `mednuskha.site` at Vercel.** The domain is bought and `api.` is
@@ -81,7 +81,7 @@ found seven bugs in one evening that no test had.
 ### Running production
 
 ```bash
-ssh mednuskha@2.28.47.28
+ssh mednuskha@<server-ip>
 cd ~/MedNuskhaV1
 docker compose ps                       # both containers, health
 docker compose logs -f backend          # the agent, the scheduler, the sends
@@ -123,7 +123,7 @@ deliberately not enabled (the button hides itself when a provider is off).
 |---|---|
 | Supabase Postgres + Storage | working, 11 tables |
 | Supabase Auth (email/password) | working, autoconfirm on |
-| WhatsApp via Baileys | linked to **923200268481**, session in `whatsapp-bridge/auth_info/` |
+| WhatsApp via Baileys | linked to **923001234567**, session in `whatsapp-bridge/auth_info/` |
 | Groq | 3 keys pooled and rotating, all verified |
 | edge-tts (Urdu voice) | no account needed |
 | faster-whisper (local ASR) | model cached |
